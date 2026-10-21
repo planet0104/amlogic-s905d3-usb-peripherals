@@ -1,0 +1,95 @@
+#!/bin/sh
+# S43usb-peripherals - 开机加载 RTL8723BU 的 Wi-Fi + 蓝牙驱动，启动 bluetoothd，并自动联网
+#
+# 放到板子的 /etc/init.d/S43usb-peripherals（排在 S30dbus、S40network 之后）。
+# USB 声卡驱动 snd-usb-audio 已编进镜像内核，不需要加载。
+# 所有动作都是 best-effort：缺文件、insmod 失败都不能拖住后面的启动流程。
+
+KO=/lib/modules/4.9.113/extra
+LOG=/tmp/usb_peripherals.log
+WATCH_PID=/var/run/usb-wifi-watch.pid
+NTP_SERVERS="ntp.aliyun.com ntp.tencent.com cn.pool.ntp.org"
+
+log() { echo "$(date +%T) $*" >> $LOG; }
+uptime_s() { cut -d. -f1 /proc/uptime; }
+
+load() {
+    [ -f "$KO/$1.ko" ] || { log "skip  $1 (absent)"; return 0; }
+    grep -q "^$1 " /proc/modules && { log "skip  $1 (loaded)"; return 0; }
+    insmod "$KO/$1.ko" >> $LOG 2>&1
+    log "load  $1 rc=$?"
+}
+
+# 守护循环：网卡开机前插、开机后插、运行中拔插都由这里接管。
+#   wlan0 出现 -> 接口 up，启动 wpa_supplicant（它能跟上之后重建的 wlan0）
+#   已关联但没有 IPv4 地址 -> 重启 udhcpc（udhcpc 跟不上重建的 wlan0）
+#   有 IPv4 地址 -> NTP 对时：板子的 aml_vrtc 没有电池，断电后时间回到 2015 年，HTTPS 证书校验会失败。
+#                   失败 1 分钟后重试，成功后每 6 小时校一次；间隔按开机时间算，不受对时跳变影响
+wifi_watch() {
+    next_sync=0
+    while true; do
+        if [ -d /sys/class/net/wlan0 ]; then
+            ifconfig wlan0 2>/dev/null | grep -q UP || ifconfig wlan0 up
+            if [ -f /etc/wpa_supplicant.conf ] && ! pidof wpa_supplicant > /dev/null; then
+                wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf >> $LOG 2>&1
+                log "wpa_supplicant rc=$?"
+            fi
+            if iw dev wlan0 link 2>/dev/null | grep -q Connected && \
+               ! ifconfig wlan0 2>/dev/null | grep -q 'inet addr'; then
+                for p in $(ps | grep '[u]dhcpc -i wlan0' | awk '{print $1}'); do kill $p; done
+                udhcpc -i wlan0 -f -t 6 -T 3 >> $LOG 2>&1 &
+                log "udhcpc started pid=$!"
+                sleep 20
+            fi
+            if [ "$(uptime_s)" -ge $next_sync ] && ifconfig wlan0 2>/dev/null | grep -q 'inet addr'; then
+                if ntpdate -b -u -t 5 $NTP_SERVERS >> $LOG 2>&1; then
+                    log "time synced: $(date)"
+                    next_sync=$(($(uptime_s) + 21600))
+                else
+                    log "ntpdate failed, retry in 60 s"
+                    next_sync=$(($(uptime_s) + 60))
+                fi
+            fi
+        fi
+        sleep 5
+    done
+}
+
+start() {
+    log "=== start ==="
+
+    # 镜像内核已内置 cfg80211 / mac80211 / bluetooth，只加载 USB 网卡自己的驱动
+    load rtl8xxxu
+    load btintel
+    load btrtl
+    load btusb
+
+    # dbus 系统总线由 S30dbus 启动；BlueZ 5 的 bluetoothd 不会自己转入后台，必须加 &
+    # hci0 晚一点出现也没关系，bluetoothd 会通过 mgmt 接口自动接管新适配器
+    if [ -x /usr/libexec/bluetooth/bluetoothd ] && ! pidof bluetoothd > /dev/null; then
+        mkdir -p /var/lib/bluetooth
+        /usr/libexec/bluetooth/bluetoothd > /dev/null 2>&1 &
+        log "bluetoothd started pid=$!"
+    fi
+
+    if ! { [ -f $WATCH_PID ] && kill -0 $(cat $WATCH_PID) 2>/dev/null; }; then
+        wifi_watch &
+        echo $! > $WATCH_PID
+        log "wifi watch started pid=$!"
+    fi
+}
+
+stop() {
+    [ -f $WATCH_PID ] && kill $(cat $WATCH_PID) 2>/dev/null
+    rm -f $WATCH_PID
+    killall udhcpc wpa_supplicant bluetoothd 2>/dev/null
+    log "=== stopped ==="
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    *)       echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0
