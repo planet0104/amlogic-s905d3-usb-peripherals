@@ -19,10 +19,15 @@ Sister projects for Luckfox Pico (RV1103): `luckfox-pico-rtl8723bu`, `luckfox-pi
 
 | Item | Status |
 | --- | --- |
-| Modules built, imported symbol CRCs match the board kernel | ✅ all 154 kernel symbols of the 4 modules |
+| Modules built, imported symbol CRCs match the board kernel | ✅ all 166 kernel symbols of the 4 modules |
 | Modules load (`insmod` clean, USB drivers registered) | ✅ |
 | Loaded on boot, `bluetoothd` running on the system D-Bus | ✅ |
-| Wi-Fi / BLE central and peripheral / USB sound playback and capture | ⏳ to be tested with the dongle and sound card attached |
+| Wi-Fi: scan, WPA2 association, DHCP, NTP time sync | ✅ tested 2026-10-27 (through a USB hub, signal −40 dBm); reconnects after reboot |
+| Wi-Fi throughput (Linux 5.10 `rtl8xxxu`, phone hotspot, Bluetooth on) | ✅ board sends ≈13 Mbit/s, receives ≈3 Mbit/s; very slow with some routers, see section 7.9 |
+| Bluetooth: firmware load, `hci0` powered, scanning (dual mode, central + peripheral roles) | ✅ tested 2026-10-27 |
+| USB sound card: `card 0 [Audio]`, default device 48 kHz playback and 16 kHz mono capture (`plug` conversion) | ✅ tested 2026-10-27 |
+| USB sound card loopback (headphones against the microphone, play while recording) | ✅ tested 2026-10-27; this AB13X only outputs the right channel, see section 6 |
+| BLE central / peripheral data exchange, receipt printer | ⏳ to be tested |
 
 ---
 
@@ -70,7 +75,7 @@ BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script.
 ├── LICENSE                            MIT (scripts and docs of this repository)
 ├── artifacts/                         prebuilt files, copy them to the board
 │   ├── kernel/                        kernel modules → /lib/modules/4.9.113/extra/
-│   │   ├── rtl8xxxu.ko                Wi-Fi driver
+│   │   ├── rtl8xxxu.ko                Wi-Fi driver (backported from Linux 5.10.110, section 7.9)
 │   │   ├── btusb.ko                   USB Bluetooth driver
 │   │   ├── btrtl.ko                   Realtek Bluetooth firmware loader, required by btusb
 │   │   └── btintel.ko                 unconditional dependency of btusb
@@ -89,8 +94,9 @@ BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script.
 │   ├── serial-push.ps1                Windows: upload a file over serial (md5 verified)
 │   └── serial-pull.ps1                Windows: download a file over serial (md5 verified)
 └── wsl-build/                         build from source (WSL2 / Linux)
-    ├── 01_get_kernel.sh               download the Amlogic vendor kernel source
+    ├── 01_get_kernel.sh               download the Amlogic vendor kernel source + Linux 5.10.110 rtl8xxxu, apply the patch
     ├── 02_build_modules.sh            build the kernel image (for CRCs) and the modules with the board's config
+    ├── rtl8xxxu-5.10-on-4.9.patch     adapts the 5.10 rtl8xxxu to the 4.9 mac80211 API
     ├── 03_verify_crc.sh               compare imported symbol CRCs with the board kernel
     ├── 04_build_bluez.sh              static BlueZ build
     ├── board-kernel.config.gz         the board's /proc/config.gz
@@ -105,7 +111,7 @@ Checksums:
 
 | File | Size | md5 |
 | --- | --- | --- |
-| `kernel/rtl8xxxu.ko` | 167584 | `e4bf8cc7f531c1c4e62d53bae084365e` |
+| `kernel/rtl8xxxu.ko` | 176600 | `c78dc3fc034c75489a6107320e114939` |
 | `kernel/btusb.ko` | 68400 | `451dddb7ff8219f33c649518e626fa83` |
 | `kernel/btrtl.ko` | 12920 | `631d1662df1e929c499ed77e5151878d` |
 | `kernel/btintel.ko` | 23744 | `c3ed384f33034d97653c5738b9ce3a1f` |
@@ -147,7 +153,7 @@ On Windows, from the repository root (`-LocalFile` must be an absolute path):
 
 ```powershell
 $R = (Get-Location).Path
-$push = { param($l, $r) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$l" -RemotePath $r }
+$push = { param($local, $remote) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$local" -RemotePath $remote }
 foreach ($m in 'rtl8xxxu','btusb','btrtl','btintel') { & $push "artifacts\kernel\$m.ko" "/lib/modules/4.9.113/extra/$m.ko" }
 & $push artifacts\firmware\rtlwifi\rtl8723bu_nic.bin /lib/firmware/rtlwifi/rtl8723bu_nic.bin
 & $push artifacts\firmware\rtl_bt\rtl8723b_fw.bin    /lib/firmware/rtl_bt/rtl8723b_fw.bin
@@ -312,6 +318,12 @@ The board has the full alsa-lib, so `plughw` converts rate, channels and format 
 parameters do not have to match the hardware exactly. AB13X capabilities (measured on Luckfox): playback S16_LE stereo
 8000–48000 Hz, capture S16_LE stereo 48000 Hz only.
 
+**This AB13X is effectively mono** (tested on this board on 2026-10-27, by ear and by loopback recording): left-only
+playback gives just a click and no tone; right-only playback is heard in both earpieces. The card takes the right
+channel and sends it to both outputs; left-channel data is dropped. Going through `plug` or straight to `hw:0,0` makes
+no difference, so it is not a driver or configuration issue. Write the same samples to both channels (mono) and both
+earpieces play it; AI-BOX's speech and music playback already does that.
+
 **Do not touch the AB13X hardware volume.** The card reports a volume range of -128 dB … -127 dB, and on Luckfox
 (kernel 5.10) writing *any* value to `PCM Playback Volume` / `Mic Capture Volume` silenced the card; only the power-on
 default works and only re-plugging restores it. `luckfox-pico-ab13x-usb-audio` hides the two controls with a driver
@@ -342,7 +354,8 @@ multiply the samples in your program). Whether the 4.9 kernel on this board beha
 
 ```bash
 cd wsl-build
-bash 01_get_kernel.sh       # download Amlogic 4.9.113 into /root/s905d3/kernel (≈180 MB tarball)
+bash 01_get_kernel.sh       # download Amlogic 4.9.113 into /root/s905d3/kernel (≈180 MB tarball),
+                            # and the 5.10.110 rtl8xxxu into /root/s905d3/rtl8xxxu-5.10 (patched)
 bash 02_build_modules.sh    # build the kernel image (for CRCs) and the 4 modules into /root/s905d3/ko
 bash 03_verify_crc.sh       # compare every imported kernel symbol CRC with board-kernel.crc.gz; must print ALL OK
 bash 04_build_bluez.sh      # static BlueZ 5.87, output /root/s905d3/bt/bluez-5.87-aarch64-static.tar.xz
@@ -374,7 +387,7 @@ The board kernel has `CONFIG_MODVERSIONS` on and `CONFIG_MODULE_FORCE_LOAD` off:
    so the board's source is older. The earliest of them, `AMLOGIC_PIXEL_PROBE`, was added in `b0b77c0408f0` (2019-08-20)
 4. Its parent `4905a1043ccf` matches the board on 10013 of 10038 exported symbols. The 25 mismatches are all Amlogic
    video-pipeline symbols (`vf_*`, `dolby_vision_*`, `amvecm_*`), unrelated to USB, networking, Bluetooth or audio.
-   All 154 kernel symbols imported by the 4 modules match
+   All 166 kernel symbols imported by the 4 modules match
 
 The other public 4.9 trees do not fit: Khadas `khadas-vims-4.9.y` kept merging upstream 4.9.x in 2019 (4.9.207 by the
 end of the year), `buildroot-aml-4.9` stops at 4.9.40 from 2018, and CoreELEC's own line was at 4.9.180 by mid-2019.
@@ -387,7 +400,7 @@ What `02_build_modules.sh` takes care of:
 - `KCFLAGS=-Wno-error`: Amlogic enables `-Werror` globally; warnings GCC 9 adds over GCC 6 (e.g. `attribute-alias`) must not be errors
 - `LOCALVERSION_AUTO` off (no git metadata in the tarball); `BT_HCIBTUSB_BCM` off, which saves `btbcm.ko`
 - Builds `vmlinux` first, generates a CRC-carrying `Module.symvers` with `scripts/mod/modpost -m -a -o Module.symvers vmlinux`,
-  then builds `M=drivers/net/wireless/realtek/rtl8xxxu` and `M=drivers/bluetooth`
+  then builds `M=/root/s905d3/rtl8xxxu-5.10` (section 7.9) and `M=drivers/bluetooth`
 
 ### 7.5 Kernel configuration
 
@@ -440,6 +453,35 @@ For a different firmware, extract its CRCs this way and then search for the matc
 `rtl8723bu_nic.bin` and `rtl8723b_fw.bin` are byte-identical to the files of the same name in
 [linux-firmware](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git) (`rtlwifi/`, `rtl_bt/`).
 
+### 7.9 Wi-Fi driver: rtl8xxxu from Linux 5.10
+
+The `rtl8xxxu` shipped with 4.9 has no rate control for the RTL8723BU; the board sent only 0.02–0.06 Mbit/s,
+which is unusable. Version 5.10.110 adds rate control and Bluetooth coexistence setup, so this repository uses it:
+
+- `01_get_kernel.sh` downloads `rtl8xxxu` from kernel.org at v5.10.110 (byte-identical to the copy in the Luckfox SDK)
+  and applies `rtl8xxxu-5.10-on-4.9.patch`. The patch only adapts to the 4.9 mac80211 API (RX rate flags, AMPDU start,
+  `CQM_RSSI_LIST`, the `skb_push` return type); the driver logic is unchanged. All 70 imported kernel symbol CRCs match
+- dmesg prints `This Realtek USB WiFi dongle (0x0bda:0xb720) is untested!` on load; it is harmless
+- **Do not set `dma_aggregation=1`**: it dropped both directions to about 10–15 KB/s. The boot script loads the module with defaults
+- TX power comes from the factory calibration in the dongle's efuse; the `txpower` shown by `iw` and the regulatory
+  domain have no effect on this driver. The antenna is fixed on S0 (switching to S1 lost 25–35 dB and could not associate).
+  Neither needs changing
+- `tx retries` / `tx failed` in `iw dev wlan0 station dump` are meaningless: the driver reports every frame as acknowledged
+
+Measured on 2026-10-27 (same dongle, through a USB hub, Bluetooth on, PC and board on the same Wi-Fi, 1–4 MB over SSH):
+
+| Driver and network | Rate the AP sends to the board (`rx bitrate`) | Board sends | Board receives |
+| --- | --- | --- | --- |
+| 4.9 stock driver, router GLSA | 1 Mbit/s | 0.02–0.06 Mbit/s | 0.1–0.2 Mbit/s |
+| 5.10 backport, router GLSA | 1 Mbit/s | 0.4–28 Mbit/s, very unstable | 0.2–0.6 Mbit/s |
+| 5.10 backport, phone hotspot | MCS 6, 58.5 Mbit/s | ≈13 Mbit/s | ≈3 Mbit/s |
+
+GLSA is a multi-node mesh router and always sent to this dongle at the lowest rate, 1 Mbit/s. The board receives slowly,
+TCP ACKs are delayed too, and sending becomes erratic; on a phone hotspot it works normally. The root cause was not
+found. This nano dongle's receive performance is weak (also poor on Windows with Realtek's own driver), which may
+combine badly with such routers' rate control. When Wi-Fi is slow, check `rx bitrate` in `iw dev wlan0 station dump`;
+if it stays at `1.0 MBit/s`, try another router, hotspot or channel.
+
 ---
 
 ## 8. Serial tools (Windows)
@@ -471,6 +513,8 @@ Three PowerShell scripts in `scripts/` (default `COM30`, change with `-PortName`
 | No `wlan0` after plugging in, dmesg shows `request_firmware failed` | Firmware missing from `/lib/firmware/rtlwifi/` |
 | `wpa_supplicant` disappears shortly after boot | `S42wifi` is still enabled (section 4.2) |
 | Associated but no IP address | Wait 5–30 s for the watch loop to restart `udhcpc`; check `/tmp/usb_peripherals.log` |
+| Wi-Fi is slow and `rx bitrate` in `iw dev wlan0 station dump` stays at `1.0 MBit/s` | The AP sends at the lowest rate (section 7.9); try another router, hotspot or channel |
+| Both directions only 10–15 KB/s and `/sys/module/rtl8xxxu/parameters/dma_aggregation` is `Y` | Do not use that parameter: `rmmod rtl8xxxu` and `insmod` it again without parameters |
 | `bluetoothctl` stuck at `Waiting to connect to bluetoothd...` | `bluetoothd` not running, or D-Bus has not loaded `bluetooth.conf` (run the `ReloadConfig` from section 4.2) |
 | `bluetoothctl list` is empty | Dongle not attached or `btusb` not bound; `ls /sys/class/bluetooth` should show `hci0` |
 | `Failed to connect: br-connection-profile-unavailable` | Dual-mode peer connected over BR/EDR; run `bluetoothctl bearer <MAC> le` and reconnect (section 5.2) |
@@ -491,7 +535,7 @@ The prebuilt binaries under `artifacts/` are third-party software and keep their
 
 | Component | License |
 | --- | --- |
-| Kernel modules (`rtl8xxxu`, `btusb`, `btrtl`, `btintel`) | GPL-2.0 (Amlogic 4.9 kernel source, see section 7.4) |
+| Kernel modules (`rtl8xxxu`, `btusb`, `btrtl`, `btintel`) | GPL-2.0 (Amlogic 4.9 kernel source, see section 7.4; `rtl8xxxu` from Linux 5.10.110, section 7.9) |
 | `rtl8723bu_nic.bin`, `rtl8723b_fw.bin` | Realtek firmware license, redistribution without modification allowed, see `artifacts/firmware/LICENCE.rtlwifi_firmware.txt` |
 | BlueZ (`bluetoothd`, `bluetoothctl`, `btmgmt`) | GPL-2.0-or-later |
 | libdbus | AFL-2.1 or GPL-2.0-or-later |

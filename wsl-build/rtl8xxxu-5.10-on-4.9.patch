@@ -1,0 +1,72 @@
+把 Linux v5.10.110 的 rtl8xxxu 移植到 Amlogic 4.9.113 内核（01_get_kernel.sh 自动打这个补丁）。
+4.9 自带的 rtl8xxxu 对 RTL8723BU 没有速率控制，发送只有约 0.02 Mbit/s；5.10 版有速率控制和蓝牙共存设置。
+改动只是适配 4.9 的 mac80211 接口：
+  - RX 速率标志：5.10 的 enc_flags / encoding / bw 字段在 4.9 里是 flag 里的 RX_FLAG_SHORT_GI / RX_FLAG_HT / RX_FLAG_40MHZ
+  - AMPDU_TX_START：4.9 没有 IEEE80211_AMPDU_TX_START_IMMEDIATE，改为调用 ieee80211_start_tx_ba_cb_irqsafe
+  - 4.9 没有 NL80211_EXT_FEATURE_CQM_RSSI_LIST
+  - skb_push 在 4.9 返回 unsigned char *，加强制转换
+
+--- a/rtl8xxxu_core.c
++++ b/rtl8xxxu_core.c
+@@ -4984,7 +4984,7 @@
+ 	if (control && control->sta)
+ 		sta = control->sta;
+ 
+-	tx_desc = skb_push(skb, tx_desc_size);
++	tx_desc = (struct rtl8xxxu_txdesc32 *)skb_push(skb, tx_desc_size);
+ 
+ 	memset(tx_desc, 0, tx_desc_size);
+ 	tx_desc->pkt_size = cpu_to_le16(pktlen);
+@@ -5079,7 +5079,7 @@
+ 				       u32 rxmcs)
+ {
+ 	if (phy_stats->sgi_en)
+-		rx_status->enc_flags |= RX_ENC_FLAG_SHORT_GI;
++		rx_status->flag |= RX_FLAG_SHORT_GI;
+ 
+ 	if (rxmcs < DESC_RATE_6M) {
+ 		/*
+@@ -5624,10 +5624,10 @@
+ 		if (rx_desc->crc32)
+ 			rx_status->flag |= RX_FLAG_FAILED_FCS_CRC;
+ 		if (rx_desc->bw)
+-			rx_status->bw = RATE_INFO_BW_40;
++			rx_status->flag |= RX_FLAG_40MHZ;
+ 
+ 		if (rx_desc->rxht) {
+-			rx_status->encoding = RX_ENC_HT;
++			rx_status->flag |= RX_FLAG_HT;
+ 			rx_status->rate_idx = rx_desc->rxmcs - DESC_RATE_MCS0;
+ 		} else {
+ 			rx_status->rate_idx = rx_desc->rxmcs;
+@@ -5693,10 +5693,10 @@
+ 	if (rx_desc->crc32)
+ 		rx_status->flag |= RX_FLAG_FAILED_FCS_CRC;
+ 	if (rx_desc->bw)
+-		rx_status->bw = RATE_INFO_BW_40;
++		rx_status->flag |= RX_FLAG_40MHZ;
+ 
+ 	if (rx_desc->rxmcs >= DESC_RATE_MCS0) {
+-		rx_status->encoding = RX_ENC_HT;
++		rx_status->flag |= RX_FLAG_HT;
+ 		rx_status->rate_idx = rx_desc->rxmcs - DESC_RATE_MCS0;
+ 	} else {
+ 		rx_status->rate_idx = rx_desc->rxmcs;
+@@ -6119,7 +6119,8 @@
+ 		dev_dbg(dev,
+ 			"Changed HT: ampdu_factor %02x, ampdu_density %02x\n",
+ 			ampdu_factor, ampdu_density);
+-		return IEEE80211_AMPDU_TX_START_IMMEDIATE;
++		ieee80211_start_tx_ba_cb_irqsafe(vif, sta->addr, tid);
++		break;
+ 	case IEEE80211_AMPDU_TX_STOP_CONT:
+ 	case IEEE80211_AMPDU_TX_STOP_FLUSH:
+ 	case IEEE80211_AMPDU_TX_STOP_FLUSH_CONT:
+@@ -6703,7 +6704,6 @@
+ 	ieee80211_hw_set(hw, HAS_RATE_CONTROL);
+ 	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
+ 
+-	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
+ 
+ 	ret = ieee80211_register_hw(priv->hw);
+ 	if (ret) {

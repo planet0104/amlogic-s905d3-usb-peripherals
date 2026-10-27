@@ -16,10 +16,15 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 模块编译，导入符号 CRC 与板子内核一致 | ✅ 4 个模块共 154 个内核符号全部一致 |
+| 模块编译，导入符号 CRC 与板子内核一致 | ✅ 4 个模块共 166 个内核符号全部一致 |
 | 模块加载（`insmod` 无报错、USB 驱动注册） | ✅ |
 | 开机自动加载、`bluetoothd` 启动并连上 dbus | ✅ |
-| Wi-Fi 联网 / BLE 主机、从机 / USB 声卡播放录音 | ⏳ 待接上网卡和声卡实测 |
+| Wi-Fi：扫描、WPA2 联网、DHCP、NTP 对时 | ✅ 2026-10-27 实测（经 USB Hub，信号 −40 dBm），重启后自动联网 |
+| Wi-Fi 吞吐（Linux 5.10 版 `rtl8xxxu`，手机热点，蓝牙开） | ✅ 板子发出约 13 Mbit/s，板子接收约 3 Mbit/s；个别路由器下很慢，见第 7.9 节 |
+| 蓝牙：固件加载、`hci0` 上电、扫描（双模，central + peripheral 角色） | ✅ 2026-10-27 实测 |
+| USB 声卡：`card 0 [Audio]`，默认设备 48 kHz 播放、16 kHz 单声道录音（`plug` 转换） | ✅ 2026-10-27 实测 |
+| USB 声卡回环（耳机贴麦克风，边放边录） | ✅ 2026-10-27 实测；这块 AB13X 只输出右声道，见第 6 节 |
+| BLE 主机 / 从机收发、小票机打印 | ⏳ 待测 |
 
 ---
 
@@ -65,7 +70,7 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 ├── LICENSE                            MIT（本仓库的脚本和文档）
 ├── artifacts/                         预编译产物（直接拷到板子）
 │   ├── kernel/                        内核模块 → /lib/modules/4.9.113/extra/
-│   │   ├── rtl8xxxu.ko                Wi-Fi 驱动
+│   │   ├── rtl8xxxu.ko                Wi-Fi 驱动（Linux 5.10.110 移植版，第 7.9 节）
 │   │   ├── btusb.ko                   USB 蓝牙驱动
 │   │   ├── btrtl.ko                   Realtek 蓝牙固件加载，btusb 依赖
 │   │   └── btintel.ko                 btusb 无条件依赖
@@ -84,8 +89,9 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 │   ├── serial-push.ps1                Windows：串口上传文件（md5 校验）
 │   └── serial-pull.ps1                Windows：串口下载文件（md5 校验）
 └── wsl-build/                         从源码编译（WSL2 / Linux）
-    ├── 01_get_kernel.sh               下载 Amlogic 厂商内核源码
+    ├── 01_get_kernel.sh               下载 Amlogic 厂商内核源码 + Linux 5.10.110 的 rtl8xxxu 并打补丁
     ├── 02_build_modules.sh            用板子配置编内核本体 + 模块
+    ├── rtl8xxxu-5.10-on-4.9.patch     5.10 版 rtl8xxxu 适配 4.9 mac80211 接口的补丁
     ├── 03_verify_crc.sh               模块导入符号的 CRC 与板子内核比对
     ├── 04_build_bluez.sh              BlueZ 静态编译
     ├── board-kernel.config.gz         板子的 /proc/config.gz
@@ -100,7 +106,7 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 
 | 文件 | 大小 | md5 |
 | --- | --- | --- |
-| `kernel/rtl8xxxu.ko` | 167584 | `e4bf8cc7f531c1c4e62d53bae084365e` |
+| `kernel/rtl8xxxu.ko` | 176600 | `c78dc3fc034c75489a6107320e114939` |
 | `kernel/btusb.ko` | 68400 | `451dddb7ff8219f33c649518e626fa83` |
 | `kernel/btrtl.ko` | 12920 | `631d1662df1e929c499ed77e5151878d` |
 | `kernel/btintel.ko` | 23744 | `c3ed384f33034d97653c5738b9ce3a1f` |
@@ -140,7 +146,7 @@ mkdir -p /lib/modules/4.9.113/extra /lib/firmware/rtlwifi /lib/firmware/rtl_bt
 
 ```powershell
 $R = (Get-Location).Path
-$push = { param($l, $r) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$l" -RemotePath $r }
+$push = { param($local, $remote) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$local" -RemotePath $remote }
 foreach ($m in 'rtl8xxxu','btusb','btrtl','btintel') { & $push "artifacts\kernel\$m.ko" "/lib/modules/4.9.113/extra/$m.ko" }
 & $push artifacts\firmware\rtlwifi\rtl8723bu_nic.bin /lib/firmware/rtlwifi/rtl8723bu_nic.bin
 & $push artifacts\firmware\rtl_bt\rtl8723b_fw.bin    /lib/firmware/rtl_bt/rtl8723b_fw.bin
@@ -298,6 +304,11 @@ arecord -D plughw:0,0 -f S16_LE -c 2 -r 48000 -d 5 /tmp/rec.wav   # 录 5 秒
 板子上有完整的 alsa-lib，用 `plughw` 时采样率、声道、格式会自动转换，不需要像 tinyalsa 那样严格匹配声卡参数。
 AB13X 的能力（在 Luckfox 上实测）：播放 S16_LE 立体声 8000～48000 Hz，录音 S16_LE 立体声只有 48000 Hz。
 
+**这块 AB13X 实际是单声道输出**（2026-10-27 在本板子上实测，耳听 + 回环录音）：只放左声道时只有开头一声"哒"，没有声音；
+只放右声道时左右耳机同时有声音。也就是说它只用右声道的数据，同时送到两只耳机，左声道数据被丢掉。
+走 `plug` 和直通 `hw:0,0` 结果一样，与驱动、配置无关。放音时左右声道写同样的数据（单声道）即可，两只耳机都能听到；
+AI-BOX 的语音和音乐播放本来就是这样写的。
+
 **AB13X 的硬件音量是坏的，不要去调**：它报告的音量范围是 -128 dB～-127 dB，在 Luckfox（内核 5.10）上实测，
 往 `PCM Playback Volume` / `Mic Capture Volume` 写**任何值**都会让声卡没声音，只有上电默认值能用，拔插声卡才能恢复。
 `luckfox-pico-ab13x-usb-audio` 用驱动补丁隐藏了这两个控件；这里驱动编在内核本体里，不能用模块的方式替换，
@@ -326,7 +337,8 @@ AB13X 的能力（在 Luckfox 上实测）：播放 S16_LE 立体声 8000～4800
 
 ```bash
 cd wsl-build
-bash 01_get_kernel.sh       # 下载 Amlogic 4.9.113 源码到 /root/s905d3/kernel（约 180 MB 压缩包）
+bash 01_get_kernel.sh       # 下载 Amlogic 4.9.113 源码到 /root/s905d3/kernel（约 180 MB 压缩包），
+                            # 以及 5.10.110 的 rtl8xxxu 到 /root/s905d3/rtl8xxxu-5.10 并打补丁
 bash 02_build_modules.sh    # 编内核本体（得到 CRC）+ 4 个模块，产物在 /root/s905d3/ko
 bash 03_verify_crc.sh       # 模块导入的每个内核符号 CRC 与 board-kernel.crc.gz 比对，必须 ALL OK
 bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/bluez-5.87-aarch64-static.tar.xz
@@ -357,7 +369,7 @@ bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/blue
    其中最早的 `AMLOGIC_PIXEL_PROBE` 加在 `b0b77c0408f0`（2019-08-20）
 4. 它的前一个提交 `4905a1043ccf` 的 CRC 和板子比对：10038 个导出符号中 10013 个一致，
    不一致的 25 个全是 Amlogic 视频处理的符号（`vf_*`、`dolby_vision_*`、`amvecm_*`），和 USB、网络、蓝牙、声音无关。
-   本仓库的 4 个模块导入的 154 个内核符号全部一致
+   本仓库的 4 个模块导入的 166 个内核符号全部一致
 
 其他公开的 4.9 树都不对：Khadas `khadas-vims-4.9.y` 在 2019 年持续合入上游 4.9.x（年底到 4.9.207），
 `buildroot-aml-4.9` 停在 2018 年的 4.9.40；CoreELEC 自己的主线在 2019 年中已是 4.9.180。
@@ -369,7 +381,7 @@ bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/blue
 - `KCFLAGS=-Wno-error`：Amlogic 全局开了 `-Werror`，GCC 9 比 GCC 6 多出的警告（比如 `attribute-alias`）不能当错误
 - 关掉 `LOCALVERSION_AUTO`（源码包没有 git 信息）；`BT_HCIBTUSB_BCM` 关掉，少编一个 `btbcm.ko`
 - 先编 `vmlinux`，再用 `scripts/mod/modpost -m -a -o Module.symvers vmlinux` 生成带 CRC 的 `Module.symvers`，
-  最后 `M=drivers/net/wireless/realtek/rtl8xxxu`、`M=drivers/bluetooth` 编模块
+  最后 `M=/root/s905d3/rtl8xxxu-5.10`（第 7.9 节）、`M=drivers/bluetooth` 编模块
 
 ### 7.5 内核配置
 
@@ -420,6 +432,33 @@ sh dump_board_crc.sh                              # 解压 boot 分区内核到 
 `rtl8723bu_nic.bin` 和 `rtl8723b_fw.bin` 与 [linux-firmware](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git)
 的 `rtlwifi/`、`rtl_bt/` 目录里的同名文件逐字节一致。
 
+### 7.9 Wi-Fi 驱动：Linux 5.10 版 rtl8xxxu
+
+4.9 内核自带的 `rtl8xxxu` 对 RTL8723BU 没有速率控制，实测板子往外发数据只有 0.02～0.06 Mbit/s，几乎不可用。
+5.10.110 版加了速率控制和蓝牙共存设置，所以本仓库改用它：
+
+- `01_get_kernel.sh` 从 kernel.org 下载 v5.10.110 的 `rtl8xxxu`（和 Luckfox SDK 里的那份逐字节一致），
+  打上 `rtl8xxxu-5.10-on-4.9.patch`。补丁只适配 4.9 的 mac80211 接口（RX 速率标志、AMPDU 启动、
+  `CQM_RSSI_LIST`、`skb_push` 返回类型），不改驱动逻辑。导入的 70 个内核符号 CRC 全部一致
+- 加载时 dmesg 打印 `This Realtek USB WiFi dongle (0x0bda:0xb720) is untested!`，可以忽略
+- **不要加 `dma_aggregation=1`**：实测会让收发都掉到十几 KB/s。开机脚本按默认参数加载
+- 发射功率按网卡 efuse 里的出厂校准值设置，`iw` 显示的 `txpower` 和监管域对这个驱动不起作用；
+  天线固定在 S0（实测切到 S1 后信号弱 25～35 dB，连不上），这两项都不需要改
+- `iw dev wlan0 station dump` 里的 `tx retries` / `tx failed` 不可信：驱动把所有发出的包都报成对方已确认
+
+实测（2026-10-27，同一块网卡，经 USB Hub，蓝牙开，电脑和板子在同一个 Wi-Fi 下用 SSH 传 1～4 MB）：
+
+| 驱动和网络 | 路由器发给板子的速率（`rx bitrate`） | 板子发出 | 板子接收 |
+| --- | --- | --- | --- |
+| 4.9 自带驱动，路由器 GLSA | 1 Mbit/s | 0.02～0.06 Mbit/s | 0.1～0.2 Mbit/s |
+| 5.10 版，路由器 GLSA | 1 Mbit/s | 0.4～28 Mbit/s，波动很大 | 0.2～0.6 Mbit/s |
+| 5.10 版，手机热点 | MCS 6，58.5 Mbit/s | 约 13 Mbit/s | 约 3 Mbit/s |
+
+GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这块网卡发数据，板子收得慢，TCP 确认包也跟着慢，
+发出的速度就很不稳定；换成手机热点后正常。具体原因没有查明，这块迷你网卡的接收能力本来就偏弱
+（在 Windows 上用 Realtek 官方驱动也很差），可能和这类路由器的速率算法凑在一起才出问题。
+遇到网速很慢时先看 `iw dev wlan0 station dump` 的 `rx bitrate`，长期停在 `1.0 MBit/s` 就换个路由器、热点或信道试试。
+
 ---
 
 ## 8. 串口工具（Windows）
@@ -451,6 +490,8 @@ sh dump_board_crc.sh                              # 解压 boot 分区内核到 
 | 插上网卡后没有 `wlan0`，dmesg 有 `request_firmware failed` | 固件没放到 `/lib/firmware/rtlwifi/` |
 | `wpa_supplicant` 开机后很快消失 | `S42wifi` 没停用（第 4.2 节） |
 | 已连上 Wi-Fi 但没有 IP | 等 5～30 秒，守护循环会重启 `udhcpc`；看 `/tmp/usb_peripherals.log` |
+| Wi-Fi 很慢，`iw dev wlan0 station dump` 的 `rx bitrate` 一直是 `1.0 MBit/s` | 路由器只用最低速率给网卡发数据（第 7.9 节），换个路由器、热点或信道 |
+| Wi-Fi 收发都只有十几 KB/s，`/sys/module/rtl8xxxu/parameters/dma_aggregation` 是 `Y` | 不要开这个参数：`rmmod rtl8xxxu` 后不带参数重新 `insmod` |
 | `bluetoothctl` 一直 `Waiting to connect to bluetoothd...` | `bluetoothd` 没在运行，或 dbus 没读入 `bluetooth.conf`（执行第 4.2 节的 `ReloadConfig`） |
 | `bluetoothctl list` 为空 | 网卡没插或 `btusb` 没绑定，`ls /sys/class/bluetooth` 应有 `hci0` |
 | `Failed to connect: br-connection-profile-unavailable` | 对端是双模设备，BlueZ 走了经典蓝牙；`bluetoothctl bearer <MAC> le` 后重连（第 5.2 节） |
@@ -470,7 +511,7 @@ sh dump_board_crc.sh                              # 解压 boot 分区内核到 
 
 | 组件 | 许可证 |
 | --- | --- |
-| 内核模块（`rtl8xxxu`、`btusb`、`btrtl`、`btintel`） | GPL-2.0（Amlogic 4.9 内核源码，见第 7.4 节） |
+| 内核模块（`rtl8xxxu`、`btusb`、`btrtl`、`btintel`） | GPL-2.0（Amlogic 4.9 内核源码，见第 7.4 节；`rtl8xxxu` 来自 Linux 5.10.110，见第 7.9 节） |
 | `rtl8723bu_nic.bin`、`rtl8723b_fw.bin` | Realtek 固件许可，允许不修改地再分发，见 `artifacts/firmware/LICENCE.rtlwifi_firmware.txt` |
 | BlueZ（`bluetoothd`、`bluetoothctl`、`btmgmt`） | GPL-2.0-or-later |
 | libdbus | AFL-2.1 或 GPL-2.0-or-later |

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 02_build_modules.sh
 # 用板子的内核配置（/proc/config.gz）编译 RTL8723BU 需要的模块：
-#   rtl8xxxu.ko                   Wi-Fi 驱动
+#   rtl8xxxu.ko                   Wi-Fi 驱动（01_get_kernel.sh 准备的 Linux 5.10.110 移植版）
 #   btusb.ko btrtl.ko btintel.ko  USB 蓝牙驱动；btusb 无条件依赖 btintel
 # cfg80211 / mac80211 / bluetooth / snd-usb-audio 都已编进镜像内核，不用编。
 #
@@ -10,6 +10,7 @@
 set -e
 
 K=${K:-/root/s905d3/kernel}
+RTL=${RTL:-/root/s905d3/rtl8xxxu-5.10}
 OUT=${OUT:-/root/s905d3/ko}
 SRC=$(cd "$(dirname "$0")" && pwd)
 # 4.9 内核配新版 gcc：宿主工具 dtc 需要 -fcommon；Amlogic 全局开了 -Werror，新编译器多出的警告不能当错误
@@ -32,12 +33,11 @@ $M -j"$(nproc)" vmlinux
 scripts/mod/modpost -m -a -o Module.symvers vmlinux
 echo "Module.symvers: $(wc -l < Module.symvers) symbols"
 
-for d in drivers/net/wireless/realtek/rtl8xxxu drivers/bluetooth; do
-    $M M=$d modules
-done
+$M M="$RTL" CONFIG_RTL8XXXU=m modules
+$M M=drivers/bluetooth modules
 
 rm -rf "$OUT" && mkdir -p "$OUT"
-cp drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.ko \
+cp "$RTL/rtl8xxxu.ko" \
    drivers/bluetooth/btusb.ko drivers/bluetooth/btrtl.ko drivers/bluetooth/btintel.ko "$OUT/"
 aarch64-linux-gnu-strip --strip-debug "$OUT"/*.ko
 
