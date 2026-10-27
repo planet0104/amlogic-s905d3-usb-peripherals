@@ -3,6 +3,7 @@
 *.c                        text eol=lf
 *.patch                    text eol=lf
 scripts/S43usb-peripherals text eol=lf
+scripts/asound.conf        text eol=lf
 *.ps1                      text eol=crlf
 *.ko                       binary
 *.bin                      binary

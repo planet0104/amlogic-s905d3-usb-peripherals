@@ -5,7 +5,8 @@
 给 **Amlogic S905D3** 核心板（官方 Buildroot 2019 镜像，Linux **4.9.113**）用的 USB 外设驱动：
 
 - **RTL8723BU** USB Wi-Fi + 蓝牙二合一网卡（USB ID `0bda:b720`）：预编译内核模块、固件、静态链接的 BlueZ、开机脚本
-- **USB 声卡**（实测 AB13X USB Audio，`0020:1610`）：驱动 `snd-usb-audio` 已编进镜像内核，本仓库只提供使用说明
+- **USB 声卡**（实测 AB13X USB Audio，`0020:1610`）：驱动 `snd-usb-audio` 是镜像内核自带的（编进内核本体，插上就有驱动，
+  不需要也不能另外加载模块，见第 6.1 节）；本仓库提供默认声卡配置 `asound.conf` 和测试脚本 `audio-test.sh`
 
 以及完整的从源码编译方法。这块板子的内核开了 `CONFIG_MODVERSIONS`，模块导入的每个内核符号都要带上和内核一致的 CRC，
 本仓库从板子的内核镜像里提取了全部 10038 个导出符号的 CRC，并找到了 CRC 对得上的 Amlogic 厂商内核源码（第 7 节）。
@@ -23,7 +24,8 @@
 | Wi-Fi 吞吐（Linux 5.10 版 `rtl8xxxu`，手机热点，蓝牙开） | ✅ 板子发出约 13 Mbit/s，板子接收约 3 Mbit/s；个别路由器下很慢，见第 7.9 节 |
 | 蓝牙：固件加载、`hci0` 上电、扫描（双模，central + peripheral 角色） | ✅ 2026-10-27 实测 |
 | USB 声卡：`card 0 [Audio]`，默认设备 48 kHz 播放、16 kHz 单声道录音（`plug` 转换） | ✅ 2026-10-27 实测 |
-| USB 声卡回环（耳机贴麦克风，边放边录） | ✅ 2026-10-27 实测；这块 AB13X 只输出右声道，见第 6 节 |
+| USB 声卡回环（耳机贴麦克风，边放边录） | ✅ 2026-10-27 实测；这块 AB13X 只输出右声道，见第 6.4 节 |
+| `asound.conf`、`audio-test.sh` 按第 4 节安装后测试 | ✅ 2026-10-27 实测 |
 | BLE 主机 / 从机收发、小票机打印 | ⏳ 待测 |
 
 ---
@@ -57,7 +59,8 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 | USB 声卡 / 摄像头 | `snd-usb-audio`、`uvcvideo`（编进内核） |
 | 用户态 | `iw` 4.14、`wpa_supplicant` 2.7、`udhcpc`、dbus 1.12.10（系统总线开机启动）、alsa-utils（`aplay` / `arecord` / `amixer`） |
 
-本仓库补上的：`rtl8xxxu`、`btusb`、`btrtl`、`btintel` 四个模块，两个 Realtek 固件，BlueZ 5.87（`bluetoothd` / `bluetoothctl` / `btmgmt`），开机脚本。
+本仓库补上的：`rtl8xxxu`、`btusb`、`btrtl`、`btintel` 四个模块，两个 Realtek 固件，BlueZ 5.87（`bluetoothd` / `bluetoothctl` / `btmgmt`），开机脚本；
+声卡的默认设备配置 `asound.conf` 和测试脚本 `audio-test.sh`。
 
 ---
 
@@ -82,6 +85,8 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 │       └── bluez-5.87-aarch64-static.tar.xz   bluetoothd / bluetoothctl / btmgmt + 配置，解压到 /
 ├── scripts/
 │   ├── S43usb-peripherals             板子侧：开机加载驱动、启动 bluetoothd、自动联网 → /etc/init.d/
+│   ├── asound.conf                    板子侧：默认声卡指向 USB 声卡（plug 自动转换格式） → /etc/
+│   ├── audio-test.sh                  板子侧：USB 声卡测试（列设备、左右声道测试音、录音峰值、回环） → /usr/bin/
 │   ├── ble-central-test.sh            板子侧：BLE 主机示例（扫描、连接、读写）
 │   ├── ble-notify-test.sh             板子侧：BLE 主机示例（订阅通知）
 │   ├── ble-peripheral-demo.sh         板子侧：BLE 从机示例（广播 + 串口透传式 GATT 服务）
@@ -152,6 +157,8 @@ foreach ($m in 'rtl8xxxu','btusb','btrtl','btintel') { & $push "artifacts\kernel
 & $push artifacts\firmware\rtl_bt\rtl8723b_fw.bin    /lib/firmware/rtl_bt/rtl8723b_fw.bin
 & $push artifacts\bluez\bluez-5.87-aarch64-static.tar.xz /tmp/bluez.tar.xz
 & $push scripts\S43usb-peripherals /etc/init.d/S43usb-peripherals
+& $push scripts\asound.conf /etc/asound.conf.new
+& $push scripts\audio-test.sh /usr/bin/audio-test.sh
 ```
 
 ### 4.2 在板子上安装
@@ -165,6 +172,10 @@ dbus-send --system --print-reply --dest=org.freedesktop.DBus / org.freedesktop.D
 chmod +x /etc/init.d/S43usb-peripherals
 # 停用 Amlogic 的 S42wifi（见下文）
 mv /etc/init.d/S42wifi /etc/init.d/_S42wifi
+# 默认声卡改成 USB 声卡（第 6.2 节），原文件留作备份
+[ -f /etc/asound.conf.orig ] || cp /etc/asound.conf /etc/asound.conf.orig
+mv /etc/asound.conf.new /etc/asound.conf
+chmod +x /usr/bin/audio-test.sh
 sync
 ```
 
@@ -208,6 +219,9 @@ dmesg | grep -iE 'rtl8xxxu|rtl8723|Bluetooth: hci0'
 iw dev wlan0 link                       # Connected to ...
 ifconfig wlan0                          # inet addr:...
 bluetoothctl show                       # Powered: yes
+# 插上声卡以后
+audio-test.sh info                      # card 0: ... USB Audio
+audio-test.sh play                      # 耳机里先后听到两声 1 kHz 测试音
 ```
 
 ---
@@ -291,17 +305,61 @@ echo "hello" > /tmp/ble-peripheral.cmd                           # 从机主动�
 
 ## 6. USB 声卡
 
-`snd-usb-audio` 已编进镜像内核，插上就能用，不需要安装任何东西。镜像没有启用板载音频，所以 USB 声卡是 `card0`。
+### 6.1 驱动：镜像内核自带，没有要编译的模块
+
+USB 声卡驱动是镜像内核自带的（`CONFIG_SND_USB_AUDIO=y`，连同 `SND_HWDEP`、`SND_RAWMIDI` 都编在内核本体里），
+开机就在，插上 UAC 标准的 USB 声卡就会出现 `card 0`。所以和 Wi-Fi 不同，声卡这里**没有预编译模块**：
+
+- 不需要：驱动已经在运行，UAC 声卡也不需要固件
+- 也不能：内核里已有同名驱动，再编一个 `snd-usb-audio.ko`，`insmod` 会因为模块重名、符号重复导出被拒绝
+
+和同类项目 `luckfox-pico-ab13x-usb-audio` 的对照：
+
+| Luckfox 项目里的内容 | 那边为什么需要 | 这块板子 |
+| --- | --- | --- |
+| `snd-usb-audio.ko` 等 4 个模块 | Luckfox 镜像内核没有 USB 声卡驱动 | 内核自带，不需要 |
+| tinyalsa（`tinyplay` / `tinycap` / `tinymix`） | Luckfox 镜像没有 alsa-utils | 镜像自带 `aplay` / `arecord` / `amixer` / `speaker-test` |
+| `insmod_usb_audio.sh` | 开机加载上面的模块 | 不需要 |
+| `usbhost` | Luckfox 的 USB 口默认是 Device 模式 | SH1.0 口本来就是 Host |
+| AB13X 隐藏坏音量控件的驱动补丁 | 见第 6.4 节 | 驱动在内核本体里，打补丁要重编并替换整个内核，没有做 |
+
+本仓库为声卡提供的是：默认声卡配置 `scripts/asound.conf`（第 6.2 节）和测试脚本 `scripts/audio-test.sh`（第 6.3 节），
+安装步骤在第 4.1、4.2 节。
+
+### 6.2 默认声卡：asound.conf
+
+镜像没有启用板载音频，USB 声卡是 `card 0`，只有 `device 0`。原厂 `/etc/asound.conf` 把默认设备指向
+`card 0 device 1`、`type hw`，USB 声卡上打不开，程序用 `default` 设备时会失败。
+`scripts/asound.conf` 改成 `type plug` → `hw:0,0`：默认设备就是 USB 声卡，采样率、声道、格式自动转换
+（AB13X 录音只支持 48 kHz，程序要 16 kHz 单声道也能直接录）。原文件备份在 `/etc/asound.conf.orig`。
+
+### 6.3 测试：audio-test.sh
+
+```sh
+audio-test.sh info        # 列出声卡、播放 / 录音设备
+audio-test.sh play        # 1 kHz 测试音：先左声道、再右声道，各约 3 秒
+audio-test.sh rec 5       # 录 5 秒（16 kHz 单声道），每 0.5 秒打印一次峰值
+audio-test.sh loop        # 回环：耳机贴着麦克风，边录边放左、右声道
+```
+
+峰值是 16 位采样的绝对值（满量程 32767）：安静房间几十到几百，放音那段明显变大就说明录到了。
+声卡同一时间只能被一个程序打开，有别的程序（比如 AI-BOX）占着时会提示播放 / 录音失败，先停掉它。
+
+2026-10-27 实测（AB13X，耳机没贴麦克风）：底噪峰值 40～80；`loop` 放右声道那段升到 100～245，放左声道那段不变
+（这块 AB13X 只输出右声道，见第 6.4 节）。
+
+### 6.4 常用命令和 AB13X 的注意事项
 
 ```sh
 aplay -l                                   # card 0: Audio [AB13X USB Audio], device 0: USB Audio
 arecord -l
 amixer -c 0 contents                       # 混音控件
-aplay -D plughw:0,0 /tmp/test.wav          # 播放
-arecord -D plughw:0,0 -f S16_LE -c 2 -r 48000 -d 5 /tmp/rec.wav   # 录 5 秒
+aplay /tmp/test.wav                        # 用默认设备播放（asound.conf 里的 plug）
+arecord -f S16_LE -c 1 -r 16000 -d 5 /tmp/rec.wav   # 录 5 秒，16 kHz 单声道
+aplay -D plughw:0,0 /tmp/test.wav          # 不依赖 asound.conf，直接指定声卡
 ```
 
-板子上有完整的 alsa-lib，用 `plughw` 时采样率、声道、格式会自动转换，不需要像 tinyalsa 那样严格匹配声卡参数。
+板子上有完整的 alsa-lib，用 `plug` / `plughw` 时采样率、声道、格式会自动转换，不需要像 tinyalsa 那样严格匹配声卡参数。
 AB13X 的能力（在 Luckfox 上实测）：播放 S16_LE 立体声 8000～48000 Hz，录音 S16_LE 立体声只有 48000 Hz。
 
 **这块 AB13X 实际是单声道输出**（2026-10-27 在本板子上实测，耳听 + 回环录音）：只放左声道时只有开头一声"哒"，没有声音；
@@ -498,7 +556,9 @@ GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这�
 | `bearer` 报 `org.bluez.Error.NotSupported` 或没有这个属性 | `main.conf` 没开 `Experimental = true`；或者对端是纯 BLE 设备，不需要设置 |
 | 小票机 `pair` 失败或连接被拒 | 先 `agent on` + `default-agent` 再配对；配对后要 `trust` |
 | `aplay: no soundcards found` | 声卡没插或没被枚举，`lsusb`、`dmesg` 看 USB 枚举 |
-| 调过音量后声卡没声音 | AB13X 的硬件音量是坏的（第 6 节），拔插声卡恢复 |
+| 调过音量后声卡没声音 | AB13X 的硬件音量是坏的（第 6.4 节），拔插声卡恢复 |
+| `aplay` / `arecord` 用默认设备报 `audio open error: No such file or directory` | `/etc/asound.conf` 还是原厂的（指向 device 1），换成 `scripts/asound.conf`（第 6.2 节） |
+| `audio-test.sh` 提示播放 / 录音失败，`aplay -l` 显示 `Subdevices: 0/1` | 声卡被别的程序占着（比如 AI-BOX），先停掉它 |
 | `tar: invalid option -- 'J'` / `'z'` | BusyBox tar 不支持，用 `xz -dc xxx.tar.xz \| tar xf - -C /` |
 
 ---

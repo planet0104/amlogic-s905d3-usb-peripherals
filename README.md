@@ -6,8 +6,9 @@ USB peripheral support for an **Amlogic S905D3** core board running the vendor B
 
 - **RTL8723BU** USB Wi-Fi + Bluetooth combo dongle (USB ID `0bda:b720`): prebuilt kernel modules, firmware,
   statically linked BlueZ and a boot script
-- **USB sound cards** (tested model: AB13X USB Audio, `0020:1610`): `snd-usb-audio` is already built into the stock
-  kernel, this repository only documents how to use it
+- **USB sound cards** (tested model: AB13X USB Audio, `0020:1610`): `snd-usb-audio` ships with the stock kernel
+  (built into the kernel image, so the driver is there as soon as the card is plugged in; no module is needed or can be
+  loaded, see section 6.1). This repository provides the default-device config `asound.conf` and the test script `audio-test.sh`
 
 plus a complete build-from-source guide. The board's kernel has `CONFIG_MODVERSIONS` enabled, so every kernel symbol a
 module imports must carry the same CRC as the running kernel. This repository extracts the CRCs of all 10038 exported
@@ -26,7 +27,8 @@ Sister projects for Luckfox Pico (RV1103): `luckfox-pico-rtl8723bu`, `luckfox-pi
 | Wi-Fi throughput (Linux 5.10 `rtl8xxxu`, phone hotspot, Bluetooth on) | ✅ board sends ≈13 Mbit/s, receives ≈3 Mbit/s; very slow with some routers, see section 7.9 |
 | Bluetooth: firmware load, `hci0` powered, scanning (dual mode, central + peripheral roles) | ✅ tested 2026-10-27 |
 | USB sound card: `card 0 [Audio]`, default device 48 kHz playback and 16 kHz mono capture (`plug` conversion) | ✅ tested 2026-10-27 |
-| USB sound card loopback (headphones against the microphone, play while recording) | ✅ tested 2026-10-27; this AB13X only outputs the right channel, see section 6 |
+| USB sound card loopback (headphones against the microphone, play while recording) | ✅ tested 2026-10-27; this AB13X only outputs the right channel, see section 6.4 |
+| `asound.conf` and `audio-test.sh` installed per section 4 and tested | ✅ tested 2026-10-27 |
 | BLE central / peripheral data exchange, receipt printer | ⏳ to be tested |
 
 ---
@@ -62,7 +64,8 @@ Already provided by the stock image:
 | Userland | `iw` 4.14, `wpa_supplicant` 2.7, `udhcpc`, D-Bus 1.12.10 (system bus started on boot), alsa-utils (`aplay` / `arecord` / `amixer`) |
 
 Added by this repository: the `rtl8xxxu`, `btusb`, `btrtl` and `btintel` modules, two Realtek firmware files,
-BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script.
+BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script; for the sound card, the default-device
+config `asound.conf` and the test script `audio-test.sh`.
 
 ---
 
@@ -87,6 +90,8 @@ BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script.
 │       └── bluez-5.87-aarch64-static.tar.xz   bluetoothd / bluetoothctl / btmgmt + config, extract to /
 ├── scripts/
 │   ├── S43usb-peripherals             board: load drivers, start bluetoothd, connect Wi-Fi → /etc/init.d/
+│   ├── asound.conf                    board: default sound device = USB card (plug converts formats) → /etc/
+│   ├── audio-test.sh                  board: sound card test (devices, L/R test tones, capture peaks, loopback) → /usr/bin/
 │   ├── ble-central-test.sh            board: BLE central example (scan, connect, read/write)
 │   ├── ble-notify-test.sh             board: BLE central example (notifications)
 │   ├── ble-peripheral-demo.sh         board: BLE peripheral example (advertising + UART-style GATT service)
@@ -159,6 +164,8 @@ foreach ($m in 'rtl8xxxu','btusb','btrtl','btintel') { & $push "artifacts\kernel
 & $push artifacts\firmware\rtl_bt\rtl8723b_fw.bin    /lib/firmware/rtl_bt/rtl8723b_fw.bin
 & $push artifacts\bluez\bluez-5.87-aarch64-static.tar.xz /tmp/bluez.tar.xz
 & $push scripts\S43usb-peripherals /etc/init.d/S43usb-peripherals
+& $push scripts\asound.conf /etc/asound.conf.new
+& $push scripts\audio-test.sh /usr/bin/audio-test.sh
 ```
 
 ### 4.2 Install on the board
@@ -172,6 +179,10 @@ dbus-send --system --print-reply --dest=org.freedesktop.DBus / org.freedesktop.D
 chmod +x /etc/init.d/S43usb-peripherals
 # disable Amlogic's S42wifi (see below)
 mv /etc/init.d/S42wifi /etc/init.d/_S42wifi
+# make the USB card the default sound device (section 6.2), keeping the original as a backup
+[ -f /etc/asound.conf.orig ] || cp /etc/asound.conf /etc/asound.conf.orig
+mv /etc/asound.conf.new /etc/asound.conf
+chmod +x /usr/bin/audio-test.sh
 sync
 ```
 
@@ -216,6 +227,9 @@ dmesg | grep -iE 'rtl8xxxu|rtl8723|Bluetooth: hci0'
 iw dev wlan0 link                       # Connected to ...
 ifconfig wlan0                          # inet addr:...
 bluetoothctl show                       # Powered: yes
+# with the sound card attached
+audio-test.sh info                      # card 0: ... USB Audio
+audio-test.sh play                      # two 1 kHz test tones in the headphones
 ```
 
 ---
@@ -303,18 +317,66 @@ mini-program BLE tools recognise it. Received data is echoed back as a notificat
 
 ## 6. USB sound card
 
-`snd-usb-audio` is built into the stock kernel; plug the card in and it works, nothing to install. The image does not
-enable the on-board audio, so the USB card is `card0`.
+### 6.1 Driver: part of the stock kernel, nothing to build
+
+The USB audio driver ships with the stock kernel (`CONFIG_SND_USB_AUDIO=y`, together with `SND_HWDEP` and
+`SND_RAWMIDI`, all built into the kernel image). It is running from boot, and a UAC-compliant USB card shows up as
+`card 0` when plugged in. So unlike Wi-Fi, there are **no prebuilt modules** for the sound card:
+
+- Not needed: the driver is already running, and UAC cards need no firmware
+- Not possible: the kernel already contains a driver of the same name; an extra `snd-usb-audio.ko` is rejected by
+  `insmod` (duplicate module name and duplicate exported symbols)
+
+Compared with the sister project `luckfox-pico-ab13x-usb-audio`:
+
+| In the Luckfox project | Why it is needed there | On this board |
+| --- | --- | --- |
+| `snd-usb-audio.ko` and 3 helper modules | The Luckfox kernel has no USB audio driver | Part of the kernel, not needed |
+| tinyalsa (`tinyplay` / `tinycap` / `tinymix`) | The Luckfox image has no alsa-utils | The image has `aplay` / `arecord` / `amixer` / `speaker-test` |
+| `insmod_usb_audio.sh` | Loads the modules above on boot | Not needed |
+| `usbhost` | The Luckfox USB port defaults to device mode | The SH1.0 port is a host port |
+| Driver patch hiding the AB13X's broken volume controls | See section 6.4 | The driver is in the kernel image; patching it means rebuilding and replacing the whole kernel, not done |
+
+What this repository provides for the sound card is the default-device config `scripts/asound.conf` (section 6.2) and
+the test script `scripts/audio-test.sh` (section 6.3); installation is in sections 4.1 and 4.2.
+
+### 6.2 Default device: asound.conf
+
+The image does not enable the on-board audio, so the USB card is `card 0` with only `device 0`. The stock
+`/etc/asound.conf` points the default device at `card 0 device 1` with `type hw`, which does not exist on the USB card,
+so programs using the `default` device fail. `scripts/asound.conf` uses `type plug` → `hw:0,0` instead: the default
+device is the USB card, with automatic rate / channel / format conversion (the AB13X only captures at 48 kHz; programs
+can still record 16 kHz mono directly). The original is kept as `/etc/asound.conf.orig`.
+
+### 6.3 Testing: audio-test.sh
+
+```sh
+audio-test.sh info        # list cards and playback / capture devices
+audio-test.sh play        # 1 kHz test tone: left channel, then right, about 3 s each
+audio-test.sh rec 5       # record 5 s (16 kHz mono) and print the peak every 0.5 s
+audio-test.sh loop        # loopback: headphones against the microphone, record while playing left then right
+```
+
+The peak is the absolute 16-bit sample value (full scale 32767): a quiet room gives tens to a few hundred; a clear rise
+while a tone plays means it was picked up. Only one program can open the card at a time; if another one holds it
+(AI-BOX, for example), the script reports that playback / capture failed, so stop that program first.
+
+Measured on 2026-10-27 (AB13X, headphones not against the microphone): noise floor peak 40–80; during `loop` the
+right-channel tone raised it to 100–245 and the left-channel tone changed nothing (this AB13X only outputs the right
+channel, see section 6.4).
+
+### 6.4 Common commands and AB13X notes
 
 ```sh
 aplay -l                                   # card 0: Audio [AB13X USB Audio], device 0: USB Audio
 arecord -l
 amixer -c 0 contents                       # mixer controls
-aplay -D plughw:0,0 /tmp/test.wav          # playback
-arecord -D plughw:0,0 -f S16_LE -c 2 -r 48000 -d 5 /tmp/rec.wav   # record 5 seconds
+aplay /tmp/test.wav                        # play through the default device (plug from asound.conf)
+arecord -f S16_LE -c 1 -r 16000 -d 5 /tmp/rec.wav   # record 5 s, 16 kHz mono
+aplay -D plughw:0,0 /tmp/test.wav          # address the card directly, without asound.conf
 ```
 
-The board has the full alsa-lib, so `plughw` converts rate, channels and format automatically; unlike tinyalsa, the
+The board has the full alsa-lib, so `plug` / `plughw` convert rate, channels and format automatically; unlike tinyalsa, the
 parameters do not have to match the hardware exactly. AB13X capabilities (measured on Luckfox): playback S16_LE stereo
 8000–48000 Hz, capture S16_LE stereo 48000 Hz only.
 
@@ -521,7 +583,9 @@ Three PowerShell scripts in `scripts/` (default `COM30`, change with `-PortName`
 | `bearer` fails with `org.bluez.Error.NotSupported` or the property is missing | `Experimental = true` not set in `main.conf`; or the peer is LE-only and needs no setting |
 | Printer `pair` fails or the connection is refused | Run `agent on` + `default-agent` before pairing; `trust` after pairing |
 | `aplay: no soundcards found` | Sound card not attached or not enumerated; check `lsusb` and `dmesg` |
-| Sound card silent after a volume change | The AB13X hardware volume is broken (section 6); re-plug the card |
+| Sound card silent after a volume change | The AB13X hardware volume is broken (section 6.4); re-plug the card |
+| `aplay` / `arecord` on the default device fail with `audio open error: No such file or directory` | `/etc/asound.conf` is still the stock one (points at device 1); replace it with `scripts/asound.conf` (section 6.2) |
+| `audio-test.sh` reports playback / capture failed, `aplay -l` shows `Subdevices: 0/1` | Another program holds the card (AI-BOX, for example); stop it first |
 | `tar: invalid option -- 'J'` / `'z'` | Not supported by BusyBox tar; use `xz -dc xxx.tar.xz \| tar xf - -C /` |
 
 ---
