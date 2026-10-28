@@ -330,8 +330,12 @@ USB 声卡驱动是镜像内核自带的（`CONFIG_SND_USB_AUDIO=y`，连同 `SN
 
 镜像没有启用板载音频，USB 声卡是 `card 0`，只有 `device 0`。原厂 `/etc/asound.conf` 把默认设备指向
 `card 0 device 1`、`type hw`，USB 声卡上打不开，程序用 `default` 设备时会失败。
-`scripts/asound.conf` 改成 `type plug` → `hw:0,0`：默认设备就是 USB 声卡，采样率、声道、格式自动转换
+`scripts/asound.conf` 改成 `type plug` → `hw:Audio,0`：默认设备就是 USB 声卡，采样率、声道、格式自动转换
 （AB13X 录音只支持 48 kHz，程序要 16 kHz 单声道也能直接录）。原文件备份在 `/etc/asound.conf.orig`。
+
+声卡按名字（`Audio` 是 AB13X 的名字）而不是编号指定：接了带麦克风的 USB 摄像头等设备时会多出一块声卡
+（实测 EZ-1300N 摄像头的麦克风是 `card 1 [EZ1300N]`），开机时编号可能对调，按编号指定就会把默认设备指到摄像头上。
+换别的声卡时，用 `cat /proc/asound/card*/id` 查它的名字，替换 `asound.conf` 里的两处 `Audio`。
 
 ### 6.3 测试：audio-test.sh
 
@@ -558,6 +562,7 @@ GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这�
 | `aplay: no soundcards found` | 声卡没插或没被枚举，`lsusb`、`dmesg` 看 USB 枚举 |
 | 调过音量后声卡没声音 | AB13X 的硬件音量是坏的（第 6.4 节），拔插声卡恢复 |
 | `aplay` / `arecord` 用默认设备报 `audio open error: No such file or directory` | `/etc/asound.conf` 还是原厂的（指向 device 1），换成 `scripts/asound.conf`（第 6.2 节） |
+| 换了别的 USB 声卡后默认设备打不开（`Unknown PCM default` 之类） | `asound.conf` 按名字 `Audio` 指定，改成新声卡的名字（第 6.2 节） |
 | `audio-test.sh` 提示播放 / 录音失败，`aplay -l` 显示 `Subdevices: 0/1` | 声卡被别的程序占着（比如 AI-BOX），先停掉它 |
 | `tar: invalid option -- 'J'` / `'z'` | BusyBox tar 不支持，用 `xz -dc xxx.tar.xz \| tar xf - -C /` |
 

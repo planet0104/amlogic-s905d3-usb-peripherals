@@ -344,9 +344,14 @@ the test script `scripts/audio-test.sh` (section 6.3); installation is in sectio
 
 The image does not enable the on-board audio, so the USB card is `card 0` with only `device 0`. The stock
 `/etc/asound.conf` points the default device at `card 0 device 1` with `type hw`, which does not exist on the USB card,
-so programs using the `default` device fail. `scripts/asound.conf` uses `type plug` → `hw:0,0` instead: the default
+so programs using the `default` device fail. `scripts/asound.conf` uses `type plug` → `hw:Audio,0` instead: the default
 device is the USB card, with automatic rate / channel / format conversion (the AB13X only captures at 48 kHz; programs
 can still record 16 kHz mono directly). The original is kept as `/etc/asound.conf.orig`.
+
+The card is selected by name (`Audio` is the AB13X's name), not by number: devices such as a USB camera with a built-in
+microphone add another sound card (the EZ-1300N camera's microphone shows up as `card 1 [EZ1300N]`), and the numbering
+may change between boots, which would point the default device at the camera. For a different card, look up its name
+with `cat /proc/asound/card*/id` and replace both `Audio` entries in `asound.conf`.
 
 ### 6.3 Testing: audio-test.sh
 
@@ -585,6 +590,7 @@ Three PowerShell scripts in `scripts/` (default `COM30`, change with `-PortName`
 | `aplay: no soundcards found` | Sound card not attached or not enumerated; check `lsusb` and `dmesg` |
 | Sound card silent after a volume change | The AB13X hardware volume is broken (section 6.4); re-plug the card |
 | `aplay` / `arecord` on the default device fail with `audio open error: No such file or directory` | `/etc/asound.conf` is still the stock one (points at device 1); replace it with `scripts/asound.conf` (section 6.2) |
+| Default device fails to open after switching to another USB sound card (`Unknown PCM default` or similar) | `asound.conf` selects the card by the name `Audio`; change it to the new card's name (section 6.2) |
 | `audio-test.sh` reports playback / capture failed, `aplay -l` shows `Subdevices: 0/1` | Another program holds the card (AI-BOX, for example); stop it first |
 | `tar: invalid option -- 'J'` / `'z'` | Not supported by BusyBox tar; use `xz -dc xxx.tar.xz \| tar xf - -C /` |
 
