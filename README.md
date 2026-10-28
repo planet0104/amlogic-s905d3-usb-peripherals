@@ -194,7 +194,9 @@ script does nothing useful, but on boot it runs `killall wpa_supplicant dhcpcd` 
 
 1. Loads `rtl8xxxu`, `btintel`, `btrtl` and `btusb` (`cfg80211` / `mac80211` / `bluetooth` are built into the kernel).
    When the dongle is plugged in, the USB core binds the drivers and the firmware is loaded
-2. Starts `bluetoothd` (with `&`; BlueZ 5 does not daemonize). It picks up `hci0` whenever it appears
+2. Starts `bluetoothd` (with `&`; BlueZ 5 does not daemonize). It picks up `hci0` whenever it appears.
+   The LE Audio, ranging and battery plugins are not loaded
+   (`--noplugin=bap,bass,vcp,micp,mcp,ccp,csip,tmap,gmap,asha,rap,battery`), see 5.5
 3. Starts a watch loop that runs every 5 s: once `wlan0` exists it brings the interface up and starts `wpa_supplicant`;
    when associated without an IPv4 address it restarts `udhcpc`. Plugging the dongle in before boot, after boot or
    re-plugging it at runtime all end up online. Once there is an IP address it sets the clock with `ntpdate`
@@ -308,6 +310,10 @@ mini-program BLE tools recognise it. Received data is echoed back as a notificat
 ### 5.5 Notes
 
 - Wi-Fi and Bluetooth share the antenna on the RTL8723BU; BLE connections occasionally fail while Wi-Fi is busy, retry
+- With the board as a peripheral, the LE Audio and similar plugins of `bluetoothd` read the connecting phone's or PC's
+  encrypted services (Windows 11 and recent phones have them), start pairing when that fails, and with no pairing agent
+  on the board `bluetoothd` then drops the link (`bonding ... status 0x05` followed by `disconnected, reason 2`) about
+  2 s after connecting. That is why `S43usb-peripherals` starts `bluetoothd` without these plugins
 - Many devices only send their name in the scan response; identify devices by MAC or service UUID
 - Programs should use the BlueZ D-Bus API (`org.bluez.Adapter1` / `Device1` / `GattCharacteristic1` / `GattManager1` /
   `LEAdvertisingManager1`) on `/var/run/dbus/system_bus_socket`; for Rust there is [bluer](https://crates.io/crates/bluer)

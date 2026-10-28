@@ -187,7 +187,8 @@ sync
 
 1. 依次加载 `rtl8xxxu`、`btintel`、`btrtl`、`btusb`（`cfg80211` / `mac80211` / `bluetooth` 已在内核里）。
    插上网卡后 USB 子系统自动绑定驱动、加载固件
-2. 启动 `bluetoothd`（必须加 `&`，BlueZ 5 不会自己转后台）；`hci0` 晚出现也没关系，`bluetoothd` 会自动接管
+2. 启动 `bluetoothd`（必须加 `&`，BlueZ 5 不会自己转后台）；`hci0` 晚出现也没关系，`bluetoothd` 会自动接管。
+   不加载 LE Audio、测距、电量插件（`--noplugin=bap,bass,vcp,micp,mcp,ccp,csip,tmap,gmap,asha,rap,battery`），见 5.5
 3. 启动一个守护循环，每 5 秒检查一次：`wlan0` 出现就把接口 up、启动 `wpa_supplicant`；
    已关联但没有 IPv4 地址就重启 `udhcpc`。开机前插、开机后插、运行中拔插网卡都能自动联网；
    拿到 IP 后用 `ntpdate` 对时（`ntp.aliyun.com`、`ntp.tencent.com`、`cn.pool.ntp.org`），失败 1 分钟后重试，
@@ -296,6 +297,9 @@ echo "hello" > /tmp/ble-peripheral.cmd                           # 从机主动�
 ### 5.5 注意事项
 
 - RTL8723BU 的 Wi-Fi 和蓝牙共用天线，Wi-Fi 工作时 BLE 建连偶尔会失败，重试一两次即可
+- 板子作从机时，手机或电脑一连上，`bluetoothd` 的 LE Audio 等插件会反过来读对方需要加密的服务（Windows 11、新手机都有），
+  读不了就自动发起配对；板子没有配对代理，配对失败后 `bluetoothd` 主动断开（日志 `bonding ... status 0x05`，
+  紧接着 `disconnected, reason 2`），连上 2 秒左右就断。所以 `S43usb-peripherals` 启动 `bluetoothd` 时不加载这些插件
 - 很多设备只在扫描响应里带名字，按 MAC 或服务 UUID 识别设备更可靠
 - 程序里直接用 D-Bus 的 BlueZ API（`org.bluez.Adapter1` / `Device1` / `GattCharacteristic1` / `GattManager1` /
   `LEAdvertisingManager1`），系统总线 socket 是 `/var/run/dbus/system_bus_socket`；Rust 可以用 [bluer](https://crates.io/crates/bluer)

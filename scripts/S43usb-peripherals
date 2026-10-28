@@ -66,9 +66,11 @@ start() {
 
     # dbus 系统总线由 S30dbus 启动；BlueZ 5 的 bluetoothd 不会自己转入后台，必须加 &
     # hci0 晚一点出现也没关系，bluetoothd 会通过 mgmt 接口自动接管新适配器
+    # 不加载 LE Audio、测距、电量这些插件：板子作 BLE 从机（蓝牙配网）时，手机或电脑一连上，它们就去读对方需要加密的服务，
+    # 读不了就自动发起配对，板子没有配对代理，配对失败后 bluetoothd 主动断开连接。
     if [ -x /usr/libexec/bluetooth/bluetoothd ] && ! pidof bluetoothd > /dev/null; then
         mkdir -p /var/lib/bluetooth
-        /usr/libexec/bluetooth/bluetoothd > /dev/null 2>&1 &
+        /usr/libexec/bluetooth/bluetoothd --noplugin=bap,bass,vcp,micp,mcp,ccp,csip,tmap,gmap,asha,rap,battery > /dev/null 2>&1 &
         log "bluetoothd started pid=$!"
     fi
 
