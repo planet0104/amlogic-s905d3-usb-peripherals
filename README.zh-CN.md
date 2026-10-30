@@ -1,10 +1,12 @@
-# Amlogic S905D3 USB 外设驱动（RTL8723BU Wi-Fi + 蓝牙、USB 声卡）
+# Amlogic S905D3 USB 外设驱动（RTL8723BU / AIC8800D80 Wi-Fi + 蓝牙、USB 声卡）
 
 [English](README.md) | 简体中文
 
 给 **Amlogic S905D3** 核心板（官方 Buildroot 2019 镜像，Linux **4.9.113**）用的 USB 外设驱动：
 
 - **RTL8723BU** USB Wi-Fi + 蓝牙二合一网卡（USB ID `0bda:b720`）：预编译内核模块、固件、静态链接的 BlueZ、开机脚本
+- **AIC8800D80** Wi-Fi 6 双频 + 蓝牙 5.4 网卡（商品名 AX900BT，USB ID `a69c:8d81`，包括 `1111:1111` 的仿制版）：
+  驱动源码（社区维护的 shenmintao/aic8800d80）、预编译模块、固件、U 盘模式切换工具，开机脚本自动切换（第 4.6 节）
 - **USB 声卡**（实测 AB13X USB Audio，`0020:1610`）：驱动 `snd-usb-audio` 是镜像内核自带的（编进内核本体，插上就有驱动，
   不需要也不能另外加载模块，见第 6.1 节）；本仓库提供默认声卡配置 `asound.conf` 和测试脚本 `audio-test.sh`
 
@@ -17,8 +19,13 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 模块编译，导入符号 CRC 与板子内核一致 | ✅ 4 个模块共 166 个内核符号全部一致 |
+| 模块编译，导入符号 CRC 与板子内核一致 | ✅ 6 个模块共 480 个内核符号全部一致 |
 | 模块加载（`insmod` 无报错、USB 驱动注册） | ✅ |
+| AIC8800D80（AX900BT，`1111:1111` 仿制版）：切换 U 盘模式、下载 Wi-Fi + 蓝牙固件、重启后自动起来 | ✅ 2026-10-30 实测 |
+| AIC8800D80 Wi-Fi：5 GHz WPA2 联网、DHCP | ✅ 信号 −36 dBm，VHT MCS 9 40 MHz（180 Mbit/s）；4.9 内核没有 Wi-Fi 6（HE） |
+| AIC8800D80 Wi-Fi 吞吐（手机热点，局域网 HTTP） | ✅ 5 GHz：板子发出 27～47 Mbit/s，接收 11～40 Mbit/s；2.4 GHz：发出 9～12 Mbit/s，接收 21～33 Mbit/s，见第 4.6 节 |
+| AIC8800D80 吞吐（SSH 传 20 MB） | ✅ 板子发出 3.8～4.2 MB/s，板子接收约 1 MB/s（RTL8723BU 只有几十 KB/s） |
+| AIC8800D80 蓝牙：`hci0` 上电、扫描（经典 + BLE） | ✅ 2026-10-30 实测 |
 | 开机自动加载、`bluetoothd` 启动并连上 dbus | ✅ |
 | Wi-Fi：扫描、WPA2 联网、DHCP、NTP 对时 | ✅ 2026-10-27 实测（经 USB Hub，信号 −40 dBm），重启后自动联网 |
 | Wi-Fi 吞吐（Linux 5.10 版 `rtl8xxxu`，手机热点，蓝牙开） | ✅ 板子发出约 13 Mbit/s，板子接收约 3 Mbit/s；个别路由器下很慢，见第 7.9 节 |
@@ -60,6 +67,7 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 | 用户态 | `iw` 4.14、`wpa_supplicant` 2.7、`udhcpc`、dbus 1.12.10（系统总线开机启动）、alsa-utils（`aplay` / `arecord` / `amixer`） |
 
 本仓库补上的：`rtl8xxxu`、`btusb`、`btrtl`、`btintel` 四个模块，两个 Realtek 固件，BlueZ 5.87（`bluetoothd` / `bluetoothctl` / `btmgmt`），开机脚本；
+AIC8800D80 的 `aic_load_fw`、`aic8800_fdrv` 两个模块、`aic8800D80/` 固件和 U 盘模式切换工具 `aic-modeswitch`；
 声卡的默认设备配置 `asound.conf` 和测试脚本 `audio-test.sh`。
 
 ---
@@ -76,11 +84,16 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 │   │   ├── rtl8xxxu.ko                Wi-Fi 驱动（Linux 5.10.110 移植版，第 7.9 节）
 │   │   ├── btusb.ko                   USB 蓝牙驱动
 │   │   ├── btrtl.ko                   Realtek 蓝牙固件加载，btusb 依赖
-│   │   └── btintel.ko                 btusb 无条件依赖
+│   │   ├── btintel.ko                 btusb 无条件依赖
+│   │   ├── aic_load_fw.ko             AIC8800D80 固件下载（第 4.6 节）
+│   │   └── aic8800_fdrv.ko            AIC8800D80 Wi-Fi 驱动，依赖 aic_load_fw
 │   ├── firmware/                      → /lib/firmware/
 │   │   ├── rtlwifi/rtl8723bu_nic.bin  Wi-Fi 固件
 │   │   ├── rtl_bt/rtl8723b_fw.bin     蓝牙固件
+│   │   ├── aic8800D80/                AIC8800D80 的 Wi-Fi / 蓝牙固件和射频配置（19 个文件）
 │   │   └── LICENCE.rtlwifi_firmware.txt
+│   ├── bin/
+│   │   └── aic-modeswitch             把 1111:1111 仿制版从 U 盘模式切成网卡（静态 aarch64） → /usr/bin/
 │   └── bluez/
 │       └── bluez-5.87-aarch64-static.tar.xz   bluetoothd / bluetoothctl / btmgmt + 配置，解压到 /
 ├── scripts/
@@ -97,6 +110,9 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
     ├── 01_get_kernel.sh               下载 Amlogic 厂商内核源码 + Linux 5.10.110 的 rtl8xxxu 并打补丁
     ├── 02_build_modules.sh            用板子配置编内核本体 + 模块
     ├── rtl8xxxu-5.10-on-4.9.patch     5.10 版 rtl8xxxu 适配 4.9 mac80211 接口的补丁
+    ├── aic8800/                       AIC8800 驱动源码（shenmintao/aic8800d80，第 7.10 节）
+    ├── aic8800-s905d3.patch           编译前对 aic8800 打的补丁
+    ├── aic-modeswitch/                aic-modeswitch 的源码和编译脚本
     ├── 03_verify_crc.sh               模块导入符号的 CRC 与板子内核比对
     ├── 04_build_bluez.sh              BlueZ 静态编译
     ├── board-kernel.config.gz         板子的 /proc/config.gz
@@ -115,9 +131,24 @@ zcat /proc/config.gz | grep -E '^CONFIG_MODVERSIONS='
 | `kernel/btusb.ko` | 68400 | `451dddb7ff8219f33c649518e626fa83` |
 | `kernel/btrtl.ko` | 12920 | `631d1662df1e929c499ed77e5151878d` |
 | `kernel/btintel.ko` | 23744 | `c3ed384f33034d97653c5738b9ce3a1f` |
+| `kernel/aic_load_fw.ko` | 143304 | `6cbdd42d2dcdbfb6de8e82fb558c07a1` |
+| `kernel/aic8800_fdrv.ko` | 980048 | `411d64454e0df58f49aa6525db9fd3ce` |
+| `bin/aic-modeswitch` | 532400 | `c2178c5b3efcd322776e5cf35bee94be` |
 | `firmware/rtlwifi/rtl8723bu_nic.bin` | 32108 | `67d4aad0db155a701610b156473a75fd` |
 | `firmware/rtl_bt/rtl8723b_fw.bin` | 45048 | `b3363f17ba07a53bfd891fe1b4072e0b` |
 | `bluez/bluez-5.87-aarch64-static.tar.xz` | 1686612 | `7fe7211255d940fa9a2185a061d097e3` |
+
+`firmware/aic8800D80/` 下的 19 个文件和 shenmintao/aic8800d80 提交 `fab5be8` 的 `fw/aic8800D80/` 逐字节一致（第 7.10 节）。
+芯片 U02 版（`chip_id=7`）实际用到的是这几个：
+
+| 文件 | 大小 | md5 |
+| --- | --- | --- |
+| `fw_patch_table_8800d80_u02.bin` | 1384 | `54b15ce88b3b9ba14bf961e6f90839fc` |
+| `fw_adid_8800d80_u02.bin` | 1708 | `f546881a81b960d89a672578eb45a809` |
+| `fw_patch_8800d80_u02.bin` | 32700 | `f5400db1d64e0150c3232eb53e7f78b6` |
+| `fw_patch_8800d80_u02_ext0.bin` | 16136 | `6fcbe60f7bcf7bc39bdf6e9c3fb7f1d8` |
+| `fmacfw_8800d80_u02.bin` | 358072 | `280bb388f3b44bf1cbe5ec072ba274da` |
+| `aic_userconfig_8800d80.txt` | 2724 | `4c1619f2ad65562412588a297dfbc86f` |
 
 ---
 
@@ -185,11 +216,15 @@ sync
 
 ### 4.3 `S43usb-peripherals` 做的事
 
-1. 依次加载 `rtl8xxxu`、`btintel`、`btrtl`、`btusb`（`cfg80211` / `mac80211` / `bluetooth` 已在内核里）。
-   插上网卡后 USB 子系统自动绑定驱动、加载固件
+1. 依次加载 `rtl8xxxu`、`btintel`、`btrtl`、`btusb`、`aic_load_fw`、`aic8800_fdrv`（`cfg80211` / `mac80211` / `bluetooth` 已在内核里，
+   缺哪个模块文件就跳过哪个）。插上网卡后 USB 子系统自动绑定驱动、加载固件。
+   加载前把 `vm.min_free_kbytes` 提到 32 MB（板子默认约 4 MB），给网卡驱动在中断里申请接收缓冲区留出余量
 2. 启动 `bluetoothd`（必须加 `&`，BlueZ 5 不会自己转后台）；`hci0` 晚出现也没关系，`bluetoothd` 会自动接管。
    不加载 LE Audio、测距、电量插件（`--noplugin=bap,bass,vcp,micp,mcp,ccp,csip,tmap,gmap,asha,rap,battery`），见 5.5
-3. 启动一个守护循环，每 5 秒检查一次：`wlan0` 出现就把接口 up、启动 `wpa_supplicant`；
+3. 启动一个守护循环，每 5 秒检查一次：AIC8800 网卡还处在 U 盘模式就把它切换成网卡（第 4.6 节）；
+   `wlan0` 出现就把接口 up、启动 `wpa_supplicant`，并关掉 Wi-Fi 省电模式（`iw dev wlan0 set power_save off`，
+   AIC8800 默认打开，关掉后实测下载快约 10%）；
+   `wpa_supplicant` 自动换到另一个 SSID 时清掉旧地址（同一 SSID 换频段、换节点不清）；
    已关联但没有 IPv4 地址就重启 `udhcpc`。开机前插、开机后插、运行中拔插网卡都能自动联网；
    拿到 IP 后用 `ntpdate` 对时（`ntp.aliyun.com`、`ntp.tencent.com`、`cn.pool.ntp.org`），失败 1 分钟后重试，
    成功后每 6 小时再校一次。板子的 `aml_vrtc` 没有电池，断电后时间回到 2015 年，不对时 HTTPS 证书校验会失败。
@@ -209,6 +244,28 @@ network={
 
 然后 `/etc/init.d/S43usb-peripherals restart`，或者直接重启板子。
 
+**优先 5 GHz、没有再用 2.4 GHz**：同一个网络写两份，一份用 `freq_list` 限定 5 GHz 信道、`priority` 高一级，
+另一份不限频段作为后备。`wpa_supplicant` 先按优先级找 5 GHz 那份，路由器 / 热点只开了 2.4 GHz（或 5 GHz 收不到）时
+自动用后备那份连 2.4 GHz；断线重连时重新按这个顺序选，所以热点从 2.4 GHz 改回 5 GHz 后也会回到 5 GHz。
+多个网络时，每个网络占两个相邻的优先级：
+
+```
+network={
+    ssid="你的 Wi-Fi 名字"
+    psk="你的 Wi-Fi 密码"
+    priority=1
+}
+network={
+    ssid="你的 Wi-Fi 名字"
+    psk="你的 Wi-Fi 密码"
+    priority=2
+    freq_list=5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5720 5745 5765 5785 5805 5825
+}
+```
+
+`iw dev wlan0 link` 的 `freq:` 是 5xxx 就是连在 5 GHz，2412～2484 是 2.4 GHz。RTL8723BU 只支持 2.4 GHz，
+用它时 5 GHz 那份永远连不上，直接落到后备那份，不影响使用。
+
 ### 4.5 验证
 
 ```sh
@@ -224,6 +281,77 @@ bluetoothctl show                       # Powered: yes
 audio-test.sh info                      # card 0: ... USB Audio
 audio-test.sh play                      # 耳机里先后听到两声 1 kHz 测试音
 ```
+
+### 4.6 AX900BT（AIC8800D80）网卡
+
+AX900BT 的主控是 **AICSEMI AIC8800D80**（单芯片 Wi-Fi 6 双频 + 蓝牙 5.4，USB 2.0），不是电商页面常写的 RTL8851BU，
+两者驱动完全不同。USB ID：工作时 `a69c:8d81`（接口 0、1 是标准 USB 蓝牙，接口 2 是 Wi-Fi），下载固件时 `a69c:8d80`。
+实测的这块（U 盘卷标 LGX WIFI6，`chip_id=7, chip_mcu_id=0`）是"Pandora 88M80"仿制版，U 盘模式的 ID 是 `1111:1111`，厂商名 `AIC`。
+
+**安装**（板子已经能联网时，也可以把下面的串口推送换成 `ssh root@板子 "cat > 路径" < 文件`）：
+
+```sh
+mkdir -p /lib/modules/4.9.113/extra /lib/firmware/aic8800D80
+```
+
+```powershell
+$R = (Get-Location).Path
+$push = { param($local, $remote) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$local" -RemotePath $remote }
+foreach ($m in 'aic_load_fw','aic8800_fdrv') { & $push "artifacts\kernel\$m.ko" "/lib/modules/4.9.113/extra/$m.ko" }
+Get-ChildItem artifacts\firmware\aic8800D80 | ForEach-Object { & $push "artifacts\firmware\aic8800D80\$($_.Name)" "/lib/firmware/aic8800D80/$($_.Name)" }
+& $push artifacts\bin\aic-modeswitch /usr/bin/aic-modeswitch
+& $push scripts\S43usb-peripherals /etc/init.d/S43usb-peripherals
+```
+
+```sh
+chmod +x /usr/bin/aic-modeswitch /etc/init.d/S43usb-peripherals
+```
+
+蓝牙用的是第 4.1 节已经装好的 `btusb`；BlueZ、`S42wifi` 的处理同第 4.2 节。装好后重启板子。
+
+**插上以后发生的事**（`S43usb-peripherals` 和两个模块自动完成）：
+
+1. 网卡先以 U 盘身份出现（里面是 Windows 驱动）。板子没有 udev，由守护循环每 5 秒检查一次：
+   - 厂商原版 `a69c:5721` / `5723` / `5724`：标准弹出 `eject` 就切换（厂商在 Ubuntu 上的 udev 规则也是这样做）
+   - 仿制版 `1111:1111`（厂商名 `AIC`）：不认弹出，`aic-modeswitch` 依次发两条厂商 SCSI 命令 `FD 00…00 F3`、`FD 00…00 F2`。
+     `1111:1111` 别的杂牌设备也用，所以还要看厂商名，不会碰别的 U 盘
+2. 网卡以下载模式 `a69c:8d80` 出现，`aic_load_fw` 把 `/lib/firmware/aic8800D80/` 的蓝牙补丁和 Wi-Fi 固件下进芯片
+3. 网卡以 `a69c:8d81` 出现：Wi-Fi 接口（类 `ff/ff/ff`）归 `aic8800_fdrv`，生成 `wlan0`；两个蓝牙接口（类 `e0/01/01`）归 `btusb`，生成 `hci0`
+4. 之后和 RTL8723BU 一样：守护循环启动 `wpa_supplicant`、`udhcpc`，`bluetoothd` 接管 `hci0`
+
+USB Hub 自己供电时，重启板子网卡不断电，芯片里还留着上次的固件，以 `8d81`（或只有 Wi-Fi 的 `8d83`）出现：
+`aic_load_fw` 第一次见到它会先让芯片重启进下载模式，再重新下载，所以也能自动起来。
+
+**验证**（插上网卡、等 30 秒左右）：
+
+```sh
+grep -E 'aic|load' /tmp/usb_peripherals.log   # load aic_load_fw rc=0、load aic8800_fdrv rc=0，可能有 aic aic-modeswitch sda rc=0
+lsusb | grep -E 'a69c|1111'                   # 最终应是 a69c:8d81；停在 1111:1111 或 5721/5723/5724 说明没切换
+dmesg | grep -iE 'aic|rwnx|firmware path'     # 能看到 firmware path = /lib/firmware/aic8800D80/...
+ls /sys/class/net /sys/class/bluetooth        # wlan0、hci0
+iw dev wlan0 link                             # Connected to ...，5 GHz 的路由器会显示 freq: 5xxx
+bluetoothctl show                             # Powered: yes
+```
+
+注意：
+
+- 驱动要求网卡跑在 USB 高速（480 Mbit/s）下，否则会让网卡反复重启。经 USB 2.0 Hub 接是高速的；
+  `dmesg` 里有 `Aic USB device detected speed` 就说明掉到了全速，换 Hub 或线
+- 和 RTL8723BU 同时插时，后出现的网卡叫 `wlan1`、`hci1`；开机脚本只给 `wlan0` 联网，所以换网卡时把旧的拔掉
+- 两个模块都是 `insmod` 加载，没有 `modprobe` 依赖处理：先 `aic_load_fw` 再 `aic8800_fdrv`，反了会报 `Unknown symbol get_fw_path` 等
+- 4.9 内核的 `cfg80211` 没有 802.11ax，驱动打印 `HE supp 0`，只能跑 Wi-Fi 5（VHT）。实测（2026-10-30，路由器 GLSA 5 GHz，
+  电脑和板子在同一个 Wi-Fi 下用 SSH 传 20 MB）：协商 VHT MCS 9 40 MHz（180 Mbit/s），板子发出 3.8～4.2 MB/s，
+  板子接收约 1 MB/s（从外网 HTTP 下载也是约 0.9 MB/s）。蓝牙开着、扫描时 Wi-Fi 会慢一些（两者共用天线）
+- 手机热点（REDMI K100 Pro Max）实测，测速服务器是手机上的 busybox httpd，板子用 `wget` 下载 200 MB、Python 上传 50～100 MB：
+
+  | 频段 | 连接 | 板子发出 | 板子接收 |
+  | --- | --- | --- | --- |
+  | 2.4 GHz（周围很拥挤） | −38 dBm，HT MCS 3～7 | 9～12 Mbit/s | 21～33 Mbit/s |
+  | 5 GHz 5805 MHz | −30 dBm，VHT MCS 6～9 40 MHz | 27～47 Mbit/s | 11～40 Mbit/s |
+
+  5 GHz 的接收波动来自手机：电脑（Intel AX211）连同一个热点下载同一个文件也只有 11～31 Mbit/s，板子下载时 CPU 空闲 70% 以上。
+  2.4 GHz 慢是信道拥挤、速率协商只到 MCS 3 左右，信号本身很强，加大发射功率没有用（驱动默认约 18 dBm，已接近上限）
+- 换网卡后板子会拿到新的 IP（MAC 不同）；SSH 连新 IP 时会停在确认主机密钥那一步，加 `-o StrictHostKeyChecking=accept-new`
 
 ---
 
@@ -405,7 +533,7 @@ AI-BOX 的语音和音乐播放本来就是这样写的。
 cd wsl-build
 bash 01_get_kernel.sh       # 下载 Amlogic 4.9.113 源码到 /root/s905d3/kernel（约 180 MB 压缩包），
                             # 以及 5.10.110 的 rtl8xxxu 到 /root/s905d3/rtl8xxxu-5.10 并打补丁
-bash 02_build_modules.sh    # 编内核本体（得到 CRC）+ 4 个模块，产物在 /root/s905d3/ko
+bash 02_build_modules.sh    # 编内核本体（得到 CRC）+ 6 个模块，产物在 /root/s905d3/ko
 bash 03_verify_crc.sh       # 模块导入的每个内核符号 CRC 与 board-kernel.crc.gz 比对，必须 ALL OK
 bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/bluez-5.87-aarch64-static.tar.xz
 ```
@@ -435,7 +563,7 @@ bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/blue
    其中最早的 `AMLOGIC_PIXEL_PROBE` 加在 `b0b77c0408f0`（2019-08-20）
 4. 它的前一个提交 `4905a1043ccf` 的 CRC 和板子比对：10038 个导出符号中 10013 个一致，
    不一致的 25 个全是 Amlogic 视频处理的符号（`vf_*`、`dolby_vision_*`、`amvecm_*`），和 USB、网络、蓝牙、声音无关。
-   本仓库的 4 个模块导入的 166 个内核符号全部一致
+   本仓库的 6 个模块导入的 480 个内核符号全部一致
 
 其他公开的 4.9 树都不对：Khadas `khadas-vims-4.9.y` 在 2019 年持续合入上游 4.9.x（年底到 4.9.207），
 `buildroot-aml-4.9` 停在 2018 年的 4.9.40；CoreELEC 自己的主线在 2019 年中已是 4.9.180。
@@ -447,7 +575,7 @@ bash 04_build_bluez.sh      # BlueZ 5.87 静态版，产物 /root/s905d3/bt/blue
 - `KCFLAGS=-Wno-error`：Amlogic 全局开了 `-Werror`，GCC 9 比 GCC 6 多出的警告（比如 `attribute-alias`）不能当错误
 - 关掉 `LOCALVERSION_AUTO`（源码包没有 git 信息）；`BT_HCIBTUSB_BCM` 关掉，少编一个 `btbcm.ko`
 - 先编 `vmlinux`，再用 `scripts/mod/modpost -m -a -o Module.symvers vmlinux` 生成带 CRC 的 `Module.symvers`，
-  最后 `M=/root/s905d3/rtl8xxxu-5.10`（第 7.9 节）、`M=drivers/bluetooth` 编模块
+  最后 `M=/root/s905d3/rtl8xxxu-5.10`（第 7.9 节）、`M=drivers/bluetooth`、`M=/root/s905d3/aic8800`（第 7.10 节）编模块
 
 ### 7.5 内核配置
 
@@ -525,6 +653,43 @@ GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这�
 （在 Windows 上用 Realtek 官方驱动也很差），可能和这类路由器的速率算法凑在一起才出问题。
 遇到网速很慢时先看 `iw dev wlan0 station dump` 的 `rx bitrate`，长期停在 `1.0 MBit/s` 就换个路由器、热点或信道试试。
 
+### 7.10 AIC8800D80 驱动
+
+源码和固件来自社区维护的 [shenmintao/aic8800d80](https://github.com/shenmintao/aic8800d80)（GPL-2.0，基于 AICSEMI 厂商驱动），
+`main` 分支提交 `fab5be8bd6d2`（`RELEASE DATE:2026_0123`）：`drivers/aic8800` 原样放在 `wsl-build/aic8800/`，
+`fw/aic8800D80` 原样放在 `artifacts/firmware/aic8800D80/`。它适用于 `chip_mcu_id=0` 的芯片（实测这块就是），
+`chip_mcu_id=1` 的要用它的 `legacy-mcu1` 分支。
+
+一开始用的是绿联 AX900 官方 Linux 驱动包（[下载页](https://www.lulian.cn/download/462.html)，`UGREEN_AIC-AX900_LinuxDriver_V1.1.zip`），
+实测有两个问题，所以换掉了：
+
+- 不认 `1111:1111` 仿制版的 U 盘模式（它的 udev 规则只有 `a69c:5721/5723/5724`）。切换命令也来自 shenmintao 的
+  `usb_modeswitch/1111_1111`，本仓库用 `aic-modeswitch`（`wsl-build/aic-modeswitch/`，通过 SG_IO 发给 `/dev/sdX`）代替 usb_modeswitch。
+  试过标准弹出（`eject`、`ALLOW MEDIUM REMOVAL` + `START STOP UNIT` 各种组合）和 USB 复位，网卡都只是退掉介质，不切换
+- `aic_load_fw` 里下载蓝牙补丁的几段被 `#if 0` 掉了，只下 Wi-Fi 固件，网卡就以只有 Wi-Fi 接口的 `a69c:8d83` 出现，没有蓝牙
+
+`02_build_modules.sh` 的处理：
+
+- `CONFIG_PLATFORM_UBUNTU=y`（默认值）：固件路径是 `/lib/firmware/aic8800D80/`。这个选项在 Makefile 里还按宿主机的 `uname`
+  设 `KDIR`、`ARCH`，命令行传的 `ARCH=arm64` 会盖过去，`KDIR` 用不到（是 `make -C 内核目录 M=...` 调用的）
+- `CONFIG_PREALLOC_RX_SKB=n`：总 Makefile 默认打开，`aic_load_fw` 一加载就预分配 1000 个 20 KB 的接收缓冲区
+  （按 32 KB 的块分配，实占约 32 MB），不插网卡也一直占着。关掉以后 USB 接收按需分配，`aic8800_fdrv` 自己的 Makefile 默认就是关的。
+  试过打开预分配并减到 256 个：芯片运行中重载模块时，`aic_load_fw` 的接收线程分配内存触发 OOM，内核直接崩溃重启，所以保持关闭
+- `CONFIG_AIC_ZLP_QUIRK=`（置空）：`aic_zlp_quirk` 只给 `368b:8d81` 用，不编
+- 打上 `aic8800-s905d3.patch`：
+  - `rwnx_tx.c` 里有一行 `trace_printk`，模块里只要有它，加载时内核就给每个 CPU 分配跟踪缓冲区
+    （4 核约 5 MB）并打印一大段 `trace_printk() being used` 警告。换成默认不编译的 `pr_debug`
+  - `aic8800_fdrv` 不预分配时，每个 USB 接收请求在 USB 完成回调（中断里）用 `GFP_ATOMIC` 申请一个 20 KB 的 skb
+    （要 32 KB 连续内存）。内存碎片化后偶尔申请不到，原代码直接放弃这个请求、不再补交，几次之后接收请求全部丢光，
+    `dmesg` 打印 `sub rx fail`，连接断掉（大流量往板子传文件时容易出现，即使空闲内存还有 200 多 MB）。
+    补丁改成：在中断里申请不到时调度驱动已有的 `rx_urb_work`，在进程上下文用 `GFP_KERNEL` 重新申请补交
+  - `aic_load_fw` 照 `8d81` 的处理加上 `a69c:8d83`：芯片里还留着只有 Wi-Fi 的旧固件时（比如 Hub 供电、板子重启网卡不断电），
+    先让它重启进下载模式再重新下载，不然 `aic_load_fw` 不接手，蓝牙一直起不来
+- 4.9 内核需要的 `cfg80211`、无线扩展（`CONFIG_CFG80211_WEXT`）、`CONFIG_NL80211_TESTMODE` 板子内核都有，其余源码不用改就能编
+
+`aic8800_fdrv` 导入 243 个内核符号、`aic_load_fw` 导入 71 个，CRC 全部一致；`aic8800_fdrv` 另外用到 `aic_load_fw` 导出的
+`get_fw_path` 等函数，这两个模块必须一起编、按顺序加载。两个模块加载后（没插网卡）内存只多占约 0.6 MB。
+
 ---
 
 ## 8. 串口工具（Windows）
@@ -569,6 +734,11 @@ GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这�
 | 换了别的 USB 声卡后默认设备打不开（`Unknown PCM default` 之类） | `asound.conf` 按名字 `Audio` 指定，改成新声卡的名字（第 6.2 节） |
 | `audio-test.sh` 提示播放 / 录音失败，`aplay -l` 显示 `Subdevices: 0/1` | 声卡被别的程序占着（比如 AI-BOX），先停掉它 |
 | `tar: invalid option -- 'J'` / `'z'` | BusyBox tar 不支持，用 `xz -dc xxx.tar.xz \| tar xf - -C /` |
+| AX900BT 插上后 `lsusb` 一直是 `1111:1111` 或 `a69c:5721` / `5723` / `5724`，多了一个 `/dev/sda` | 网卡停在 U 盘模式：`S43usb-peripherals` 没在运行（守护循环负责切换），或手动 `aic-modeswitch /dev/sda`（`1111:1111`）/ `eject /dev/sda`（`a69c:57xx`） |
+| AX900BT 有 `wlan0` 没有 `hci0`，`lsusb` 是 `a69c:8d83` | 芯片里是只有 Wi-Fi 的固件（比如用过绿联原版驱动）：确认装的是本仓库的 `aic_load_fw`，`rmmod aic8800_fdrv aic_load_fw` 后按顺序重新 `insmod`，或拔插网卡 |
+| AX900BT 插上后没有 `wlan0`，dmesg 有 `firmware path = ...` 后读文件失败 | 固件没放到 `/lib/firmware/aic8800D80/`（第 4.6 节） |
+| `insmod aic8800_fdrv.ko` 报 `Unknown symbol get_fw_path` 等 | 先加载 `aic_load_fw.ko` |
+| dmesg 有 `Aic USB device detected speed`，网卡反复断开重连 | 网卡掉到了 USB 全速，换 USB 2.0 Hub 或线（第 4.6 节） |
 
 ---
 
@@ -581,7 +751,10 @@ GLSA 是多节点组网的路由器，它始终只用最低的 1 Mbit/s 给这�
 | 组件 | 许可证 |
 | --- | --- |
 | 内核模块（`rtl8xxxu`、`btusb`、`btrtl`、`btintel`） | GPL-2.0（Amlogic 4.9 内核源码，见第 7.4 节；`rtl8xxxu` 来自 Linux 5.10.110，见第 7.9 节） |
+| `aic_load_fw`、`aic8800_fdrv` 及 `wsl-build/aic8800/` 源码 | GPL-2.0（shenmintao/aic8800d80，基于 AICSEMI 驱动），见第 7.10 节 |
+| `aic-modeswitch` | MIT（本仓库编写，命令序列来自 shenmintao/aic8800d80） |
 | `rtl8723bu_nic.bin`、`rtl8723b_fw.bin` | Realtek 固件许可，允许不修改地再分发，见 `artifacts/firmware/LICENCE.rtlwifi_firmware.txt` |
+| `aic8800D80/` 固件 | AICSEMI 固件，从 shenmintao/aic8800d80 原样转发，没有附带单独的许可文本 |
 | BlueZ（`bluetoothd`、`bluetoothctl`、`btmgmt`） | GPL-2.0-or-later |
 | libdbus | AFL-2.1 或 GPL-2.0-or-later |
 | glib、libffi、pcre2、expat、zlib、ncurses | LGPL-2.1+ / MIT / BSD-3-Clause / MIT / Zlib / MIT-X11 |

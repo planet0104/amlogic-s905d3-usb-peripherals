@@ -1,4 +1,4 @@
-# Amlogic S905D3 USB Peripheral Drivers (RTL8723BU Wi-Fi + Bluetooth, USB Sound Card)
+# Amlogic S905D3 USB Peripheral Drivers (RTL8723BU / AIC8800D80 Wi-Fi + Bluetooth, USB Sound Card)
 
 English | [简体中文](README.zh-CN.md)
 
@@ -6,6 +6,9 @@ USB peripheral support for an **Amlogic S905D3** core board running the vendor B
 
 - **RTL8723BU** USB Wi-Fi + Bluetooth combo dongle (USB ID `0bda:b720`): prebuilt kernel modules, firmware,
   statically linked BlueZ and a boot script
+- **AIC8800D80** dual-band Wi-Fi 6 + Bluetooth 5.4 dongle (sold as AX900BT, USB ID `a69c:8d81`, including the `1111:1111`
+  clone): driver source (the community-maintained shenmintao/aic8800d80), prebuilt modules, firmware and a mode-switch tool;
+  the boot script switches it out of its "driver CD" mode automatically (section 4.6)
 - **USB sound cards** (tested model: AB13X USB Audio, `0020:1610`): `snd-usb-audio` ships with the stock kernel
   (built into the kernel image, so the driver is there as soon as the card is plugged in; no module is needed or can be
   loaded, see section 6.1). This repository provides the default-device config `asound.conf` and the test script `audio-test.sh`
@@ -20,8 +23,13 @@ Sister projects for Luckfox Pico (RV1103): `luckfox-pico-rtl8723bu`, `luckfox-pi
 
 | Item | Status |
 | --- | --- |
-| Modules built, imported symbol CRCs match the board kernel | ✅ all 166 kernel symbols of the 4 modules |
+| Modules built, imported symbol CRCs match the board kernel | ✅ all 480 kernel symbols of the 6 modules |
 | Modules load (`insmod` clean, USB drivers registered) | ✅ |
+| AIC8800D80 (AX900BT, `1111:1111` clone): CD-mode switch, Wi-Fi + Bluetooth firmware download, comes up again after reboot | ✅ tested 2026-10-30 |
+| AIC8800D80 Wi-Fi: 5 GHz WPA2 association, DHCP | ✅ signal −36 dBm, VHT MCS 9 40 MHz (180 Mbit/s); no Wi-Fi 6 (HE) on the 4.9 kernel |
+| AIC8800D80 throughput (phone hotspot, LAN HTTP) | ✅ 5 GHz: board sends 27–47 Mbit/s, receives 11–40 Mbit/s; 2.4 GHz: sends 9–12 Mbit/s, receives 21–33 Mbit/s, see 4.6 |
+| AIC8800D80 throughput (20 MB over SSH) | ✅ board sends 3.8–4.2 MB/s, receives ≈1 MB/s (the RTL8723BU manages tens of KB/s) |
+| AIC8800D80 Bluetooth: `hci0` powered, scanning (classic + BLE) | ✅ tested 2026-10-30 |
 | Loaded on boot, `bluetoothd` running on the system D-Bus | ✅ |
 | Wi-Fi: scan, WPA2 association, DHCP, NTP time sync | ✅ tested 2026-10-27 (through a USB hub, signal −40 dBm); reconnects after reboot |
 | Wi-Fi throughput (Linux 5.10 `rtl8xxxu`, phone hotspot, Bluetooth on) | ✅ board sends ≈13 Mbit/s, receives ≈3 Mbit/s; very slow with some routers, see section 7.9 |
@@ -64,8 +72,9 @@ Already provided by the stock image:
 | Userland | `iw` 4.14, `wpa_supplicant` 2.7, `udhcpc`, D-Bus 1.12.10 (system bus started on boot), alsa-utils (`aplay` / `arecord` / `amixer`) |
 
 Added by this repository: the `rtl8xxxu`, `btusb`, `btrtl` and `btintel` modules, two Realtek firmware files,
-BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script; for the sound card, the default-device
-config `asound.conf` and the test script `audio-test.sh`.
+BlueZ 5.87 (`bluetoothd` / `bluetoothctl` / `btmgmt`) and a boot script; the AIC8800D80 modules `aic_load_fw` and
+`aic8800_fdrv`, the `aic8800D80/` firmware and the mode-switch tool `aic-modeswitch`; for the sound card, the
+default-device config `asound.conf` and the test script `audio-test.sh`.
 
 ---
 
@@ -81,11 +90,16 @@ config `asound.conf` and the test script `audio-test.sh`.
 │   │   ├── rtl8xxxu.ko                Wi-Fi driver (backported from Linux 5.10.110, section 7.9)
 │   │   ├── btusb.ko                   USB Bluetooth driver
 │   │   ├── btrtl.ko                   Realtek Bluetooth firmware loader, required by btusb
-│   │   └── btintel.ko                 unconditional dependency of btusb
+│   │   ├── btintel.ko                 unconditional dependency of btusb
+│   │   ├── aic_load_fw.ko             AIC8800D80 firmware download (section 4.6)
+│   │   └── aic8800_fdrv.ko            AIC8800D80 Wi-Fi driver, depends on aic_load_fw
 │   ├── firmware/                      → /lib/firmware/
 │   │   ├── rtlwifi/rtl8723bu_nic.bin  Wi-Fi firmware
 │   │   ├── rtl_bt/rtl8723b_fw.bin     Bluetooth firmware
+│   │   ├── aic8800D80/                AIC8800D80 Wi-Fi / Bluetooth firmware and RF config (19 files)
 │   │   └── LICENCE.rtlwifi_firmware.txt
+│   ├── bin/
+│   │   └── aic-modeswitch             switches the 1111:1111 clone out of CD mode (static aarch64) → /usr/bin/
 │   └── bluez/
 │       └── bluez-5.87-aarch64-static.tar.xz   bluetoothd / bluetoothctl / btmgmt + config, extract to /
 ├── scripts/
@@ -102,6 +116,9 @@ config `asound.conf` and the test script `audio-test.sh`.
     ├── 01_get_kernel.sh               download the Amlogic vendor kernel source + Linux 5.10.110 rtl8xxxu, apply the patch
     ├── 02_build_modules.sh            build the kernel image (for CRCs) and the modules with the board's config
     ├── rtl8xxxu-5.10-on-4.9.patch     adapts the 5.10 rtl8xxxu to the 4.9 mac80211 API
+    ├── aic8800/                       AIC8800 driver source (shenmintao/aic8800d80; section 7.10)
+    ├── aic8800-s905d3.patch           patch applied to aic8800 before building
+    ├── aic-modeswitch/                aic-modeswitch source and build script
     ├── 03_verify_crc.sh               compare imported symbol CRCs with the board kernel
     ├── 04_build_bluez.sh              static BlueZ build
     ├── board-kernel.config.gz         the board's /proc/config.gz
@@ -120,9 +137,24 @@ Checksums:
 | `kernel/btusb.ko` | 68400 | `451dddb7ff8219f33c649518e626fa83` |
 | `kernel/btrtl.ko` | 12920 | `631d1662df1e929c499ed77e5151878d` |
 | `kernel/btintel.ko` | 23744 | `c3ed384f33034d97653c5738b9ce3a1f` |
+| `kernel/aic_load_fw.ko` | 143304 | `6cbdd42d2dcdbfb6de8e82fb558c07a1` |
+| `kernel/aic8800_fdrv.ko` | 980048 | `411d64454e0df58f49aa6525db9fd3ce` |
+| `bin/aic-modeswitch` | 532400 | `c2178c5b3efcd322776e5cf35bee94be` |
 | `firmware/rtlwifi/rtl8723bu_nic.bin` | 32108 | `67d4aad0db155a701610b156473a75fd` |
 | `firmware/rtl_bt/rtl8723b_fw.bin` | 45048 | `b3363f17ba07a53bfd891fe1b4072e0b` |
 | `bluez/bluez-5.87-aarch64-static.tar.xz` | 1686612 | `7fe7211255d940fa9a2185a061d097e3` |
+
+The 19 files in `firmware/aic8800D80/` are byte-identical to `fw/aic8800D80/` in shenmintao/aic8800d80 commit `fab5be8`
+(section 7.10). The ones actually used by the U02 chip revision (`chip_id=7`):
+
+| File | Size | md5 |
+| --- | --- | --- |
+| `fw_patch_table_8800d80_u02.bin` | 1384 | `54b15ce88b3b9ba14bf961e6f90839fc` |
+| `fw_adid_8800d80_u02.bin` | 1708 | `f546881a81b960d89a672578eb45a809` |
+| `fw_patch_8800d80_u02.bin` | 32700 | `f5400db1d64e0150c3232eb53e7f78b6` |
+| `fw_patch_8800d80_u02_ext0.bin` | 16136 | `6fcbe60f7bcf7bc39bdf6e9c3fb7f1d8` |
+| `fmacfw_8800d80_u02.bin` | 358072 | `280bb388f3b44bf1cbe5ec072ba274da` |
+| `aic_userconfig_8800d80.txt` | 2724 | `4c1619f2ad65562412588a297dfbc86f` |
 
 ---
 
@@ -192,13 +224,19 @@ script does nothing useful, but on boot it runs `killall wpa_supplicant dhcpcd` 
 
 ### 4.3 What `S43usb-peripherals` does
 
-1. Loads `rtl8xxxu`, `btintel`, `btrtl` and `btusb` (`cfg80211` / `mac80211` / `bluetooth` are built into the kernel).
-   When the dongle is plugged in, the USB core binds the drivers and the firmware is loaded
+1. Loads `rtl8xxxu`, `btintel`, `btrtl`, `btusb`, `aic_load_fw` and `aic8800_fdrv` (`cfg80211` / `mac80211` / `bluetooth`
+   are built into the kernel; missing module files are skipped).
+   When a dongle is plugged in, the USB core binds the drivers and the firmware is loaded.
+   Before loading, `vm.min_free_kbytes` is raised to 32 MB (the board defaults to about 4 MB) so the Wi-Fi driver has
+   headroom for receive buffers allocated in interrupt context
 2. Starts `bluetoothd` (with `&`; BlueZ 5 does not daemonize). It picks up `hci0` whenever it appears.
    The LE Audio, ranging and battery plugins are not loaded
    (`--noplugin=bap,bass,vcp,micp,mcp,ccp,csip,tmap,gmap,asha,rap,battery`), see 5.5
-3. Starts a watch loop that runs every 5 s: once `wlan0` exists it brings the interface up and starts `wpa_supplicant`;
-   when associated without an IPv4 address it restarts `udhcpc`. Plugging the dongle in before boot, after boot or
+3. Starts a watch loop that runs every 5 s: if an AIC8800 dongle is still in its CD mode it switches it to Wi-Fi mode (section 4.6);
+   once `wlan0` exists it brings the interface up, starts `wpa_supplicant` and turns Wi-Fi power save off
+   (`iw dev wlan0 set power_save off`; the AIC8800 enables it by default, and downloads are about 10% faster without it);
+   when `wpa_supplicant` moves to a different SSID it drops the old address (not when the same SSID changes band or
+   access point); when associated without an IPv4 address it restarts `udhcpc`. Plugging the dongle in before boot, after boot or
    re-plugging it at runtime all end up online. Once there is an IP address it sets the clock with `ntpdate`
    (`ntp.aliyun.com`, `ntp.tencent.com`, `cn.pool.ntp.org`), retrying after 1 minute on failure and re-syncing every
    6 hours. The board's `aml_vrtc` has no battery and falls back to 2015 after power loss, which breaks HTTPS
@@ -218,6 +256,29 @@ network={
 
 Then run `/etc/init.d/S43usb-peripherals restart` or reboot.
 
+**Prefer 5 GHz, fall back to 2.4 GHz**: write each network twice: once restricted to 5 GHz channels with `freq_list`
+and one `priority` higher, and once unrestricted as the fallback. `wpa_supplicant` tries the 5 GHz entry first by
+priority; when the router / hotspot only offers 2.4 GHz (or 5 GHz is out of range) it uses the fallback entry on
+2.4 GHz. It picks again in this order on every reconnect, so switching a hotspot from 2.4 GHz back to 5 GHz moves the
+board back to 5 GHz. With several networks, each one takes two adjacent priorities:
+
+```
+network={
+    ssid="your SSID"
+    psk="your password"
+    priority=1
+}
+network={
+    ssid="your SSID"
+    psk="your password"
+    priority=2
+    freq_list=5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5720 5745 5765 5785 5805 5825
+}
+```
+
+`freq: 5xxx` in `iw dev wlan0 link` means 5 GHz, 2412–2484 means 2.4 GHz. The RTL8723BU is 2.4 GHz only; with it the
+5 GHz entry never connects and the fallback entry is used, which is harmless.
+
 ### 4.5 Verify
 
 ```sh
@@ -233,6 +294,91 @@ bluetoothctl show                       # Powered: yes
 audio-test.sh info                      # card 0: ... USB Audio
 audio-test.sh play                      # two 1 kHz test tones in the headphones
 ```
+
+### 4.6 AX900BT (AIC8800D80) dongle
+
+The AX900BT is built on the **AICSEMI AIC8800D80** (single-chip dual-band Wi-Fi 6 + Bluetooth 5.4, USB 2.0), not the
+RTL8851BU many shop pages claim; the two need completely different drivers. USB IDs: `a69c:8d81` in normal operation
+(interfaces 0 and 1 are standard USB Bluetooth, interface 2 is Wi-Fi), `a69c:8d80` while firmware is being downloaded.
+The unit tested here (CD label LGX WIFI6, `chip_id=7, chip_mcu_id=0`) is a "Pandora 88M80" clone whose CD mode is
+`1111:1111` with manufacturer string `AIC`.
+
+**Install** (once the board is online you can replace the serial push with `ssh root@board "cat > path" < file`):
+
+```sh
+mkdir -p /lib/modules/4.9.113/extra /lib/firmware/aic8800D80
+```
+
+```powershell
+$R = (Get-Location).Path
+$push = { param($local, $remote) .\scripts\serial-push.ps1 -PortName COM20 -LocalFile "$R\$local" -RemotePath $remote }
+foreach ($m in 'aic_load_fw','aic8800_fdrv') { & $push "artifacts\kernel\$m.ko" "/lib/modules/4.9.113/extra/$m.ko" }
+Get-ChildItem artifacts\firmware\aic8800D80 | ForEach-Object { & $push "artifacts\firmware\aic8800D80\$($_.Name)" "/lib/firmware/aic8800D80/$($_.Name)" }
+& $push artifacts\bin\aic-modeswitch /usr/bin/aic-modeswitch
+& $push scripts\S43usb-peripherals /etc/init.d/S43usb-peripherals
+```
+
+```sh
+chmod +x /usr/bin/aic-modeswitch /etc/init.d/S43usb-peripherals
+```
+
+Bluetooth uses the `btusb` installed in section 4.1; BlueZ and `S42wifi` are handled as in section 4.2. Reboot afterwards.
+
+**What happens when it is plugged in** (done automatically by `S43usb-peripherals` and the two modules):
+
+1. The dongle first shows up as a CD / USB drive holding the Windows driver. The board has no udev, so the watch loop
+   checks every 5 s:
+   - original vendor IDs `a69c:5721` / `5723` / `5724`: a standard `eject` switches it (the vendor's Ubuntu udev rule does the same)
+   - the `1111:1111` clone (manufacturer `AIC`): ignores eject; `aic-modeswitch` sends two vendor SCSI commands,
+     `FD 00…00 F3` then `FD 00…00 F2`. Other cheap devices use `1111:1111` too, so the manufacturer string is checked as
+     well and no other USB drive is touched
+2. The dongle shows up in download mode `a69c:8d80`; `aic_load_fw` downloads the Bluetooth patch and the Wi-Fi firmware
+   from `/lib/firmware/aic8800D80/`
+3. The dongle comes back as `a69c:8d81`: the Wi-Fi interface (class `ff/ff/ff`) is bound by `aic8800_fdrv` and becomes
+   `wlan0`; the two Bluetooth interfaces (class `e0/01/01`) are bound by `btusb` and become `hci0`
+4. From here on it works like the RTL8723BU: the watch loop starts `wpa_supplicant` and `udhcpc`, `bluetoothd` takes over `hci0`
+
+With a self-powered USB hub the dongle keeps power across a board reboot and still runs the previous firmware, showing
+up as `8d81` (or the Wi-Fi-only `8d83`): `aic_load_fw` reboots it into download mode the first time it sees it and
+downloads again, so it comes up automatically as well.
+
+**Verify** (plug the dongle in and wait about 30 s):
+
+```sh
+grep -E 'aic|load' /tmp/usb_peripherals.log   # load aic_load_fw rc=0, load aic8800_fdrv rc=0, maybe aic aic-modeswitch sda rc=0
+lsusb | grep -E 'a69c|1111'                   # should end up as a69c:8d81; 1111:1111 or 5721/5723/5724 means it was not switched
+dmesg | grep -iE 'aic|rwnx|firmware path'     # firmware path = /lib/firmware/aic8800D80/...
+ls /sys/class/net /sys/class/bluetooth        # wlan0, hci0
+iw dev wlan0 link                             # Connected to ...; a 5 GHz router shows freq: 5xxx
+bluetoothctl show                             # Powered: yes
+```
+
+Notes:
+
+- The driver requires USB high speed (480 Mbit/s) and keeps rebooting the dongle otherwise. Through a USB 2.0 hub it is
+  high speed; `Aic USB device detected speed` in `dmesg` means it fell back to full speed, try another hub or cable
+- With the RTL8723BU attached as well, the later dongle becomes `wlan1` / `hci1`; the boot script only brings `wlan0`
+  online, so unplug the old dongle when switching
+- Both modules are loaded with `insmod`, which does not resolve dependencies: `aic_load_fw` first, then `aic8800_fdrv`,
+  otherwise you get `Unknown symbol get_fw_path` and similar
+- The 4.9 kernel's `cfg80211` has no 802.11ax; the driver prints `HE supp 0` and runs as Wi-Fi 5 (VHT). Measured on
+  2026-10-30 (router GLSA, 5 GHz, PC and board on the same Wi-Fi, 20 MB over SSH): VHT MCS 9 40 MHz (180 Mbit/s), the
+  board sends 3.8–4.2 MB/s and receives ≈1 MB/s (≈0.9 MB/s for an HTTP download from the internet too). Wi-Fi is somewhat
+  slower while Bluetooth is busy, e.g. scanning (they share the antenna)
+- Measured on a phone hotspot (REDMI K100 Pro Max) against busybox httpd on the phone; the board downloads 200 MB with
+  `wget` and uploads 50–100 MB with Python:
+
+  | Band | Link | Board sends | Board receives |
+  | --- | --- | --- | --- |
+  | 2.4 GHz (very crowded) | −38 dBm, HT MCS 3–7 | 9–12 Mbit/s | 21–33 Mbit/s |
+  | 5 GHz, 5805 MHz | −30 dBm, VHT MCS 6–9 40 MHz | 27–47 Mbit/s | 11–40 Mbit/s |
+
+  The 5 GHz receive variance comes from the phone: a PC (Intel AX211) on the same hotspot downloads the same file at
+  only 11–31 Mbit/s, and the board's CPU stays more than 70% idle while downloading. 2.4 GHz is slow because the channel
+  is congested and the rate only reaches about MCS 3 despite a strong signal; more TX power would not help (the driver
+  already uses about 18 dBm, close to the limit)
+- The board gets a new IP after switching dongles (different MAC); SSH to the new address stops at the host-key prompt,
+  add `-o StrictHostKeyChecking=accept-new`
 
 ---
 
@@ -429,7 +575,7 @@ multiply the samples in your program). Whether the 4.9 kernel on this board beha
 cd wsl-build
 bash 01_get_kernel.sh       # download Amlogic 4.9.113 into /root/s905d3/kernel (≈180 MB tarball),
                             # and the 5.10.110 rtl8xxxu into /root/s905d3/rtl8xxxu-5.10 (patched)
-bash 02_build_modules.sh    # build the kernel image (for CRCs) and the 4 modules into /root/s905d3/ko
+bash 02_build_modules.sh    # build the kernel image (for CRCs) and the 6 modules into /root/s905d3/ko
 bash 03_verify_crc.sh       # compare every imported kernel symbol CRC with board-kernel.crc.gz; must print ALL OK
 bash 04_build_bluez.sh      # static BlueZ 5.87, output /root/s905d3/bt/bluez-5.87-aarch64-static.tar.xz
 ```
@@ -460,7 +606,7 @@ The board kernel has `CONFIG_MODVERSIONS` on and `CONFIG_MODULE_FORCE_LOAD` off:
    so the board's source is older. The earliest of them, `AMLOGIC_PIXEL_PROBE`, was added in `b0b77c0408f0` (2019-08-20)
 4. Its parent `4905a1043ccf` matches the board on 10013 of 10038 exported symbols. The 25 mismatches are all Amlogic
    video-pipeline symbols (`vf_*`, `dolby_vision_*`, `amvecm_*`), unrelated to USB, networking, Bluetooth or audio.
-   All 166 kernel symbols imported by the 4 modules match
+   All 480 kernel symbols imported by the 6 modules match
 
 The other public 4.9 trees do not fit: Khadas `khadas-vims-4.9.y` kept merging upstream 4.9.x in 2019 (4.9.207 by the
 end of the year), `buildroot-aml-4.9` stops at 4.9.40 from 2018, and CoreELEC's own line was at 4.9.180 by mid-2019.
@@ -473,7 +619,7 @@ What `02_build_modules.sh` takes care of:
 - `KCFLAGS=-Wno-error`: Amlogic enables `-Werror` globally; warnings GCC 9 adds over GCC 6 (e.g. `attribute-alias`) must not be errors
 - `LOCALVERSION_AUTO` off (no git metadata in the tarball); `BT_HCIBTUSB_BCM` off, which saves `btbcm.ko`
 - Builds `vmlinux` first, generates a CRC-carrying `Module.symvers` with `scripts/mod/modpost -m -a -o Module.symvers vmlinux`,
-  then builds `M=/root/s905d3/rtl8xxxu-5.10` (section 7.9) and `M=drivers/bluetooth`
+  then builds `M=/root/s905d3/rtl8xxxu-5.10` (section 7.9), `M=drivers/bluetooth` and `M=/root/s905d3/aic8800` (section 7.10)
 
 ### 7.5 Kernel configuration
 
@@ -555,6 +701,55 @@ found. This nano dongle's receive performance is weak (also poor on Windows with
 combine badly with such routers' rate control. When Wi-Fi is slow, check `rx bitrate` in `iw dev wlan0 station dump`;
 if it stays at `1.0 MBit/s`, try another router, hotspot or channel.
 
+### 7.10 AIC8800D80 driver
+
+Source and firmware come from the community-maintained [shenmintao/aic8800d80](https://github.com/shenmintao/aic8800d80)
+(GPL-2.0, based on the AICSEMI vendor driver), `main` branch commit `fab5be8bd6d2` (`RELEASE DATE:2026_0123`):
+`drivers/aic8800` is kept unmodified in `wsl-build/aic8800/` and `fw/aic8800D80` in `artifacts/firmware/aic8800D80/`.
+It is meant for `chip_mcu_id=0` chips (as tested here); `chip_mcu_id=1` chips need its `legacy-mcu1` branch.
+
+The first attempt used UGREEN's official AX900 Linux driver package
+([download page](https://www.lulian.cn/download/462.html), `UGREEN_AIC-AX900_LinuxDriver_V1.1.zip`). Testing showed two
+problems, so it was replaced:
+
+- It does not know the CD mode of the `1111:1111` clone (its udev rule only lists `a69c:5721/5723/5724`). The switch
+  sequence also comes from shenmintao's `usb_modeswitch/1111_1111`; this repository uses `aic-modeswitch`
+  (`wsl-build/aic-modeswitch/`, sends it to `/dev/sdX` via SG_IO) instead of usb_modeswitch. Standard ejects
+  (`eject`, `ALLOW MEDIUM REMOVAL` + `START STOP UNIT` in various combinations) and a USB reset only unload the medium
+- The Bluetooth patch download in `aic_load_fw` is `#if 0`-ed out; only the Wi-Fi firmware is downloaded, so the dongle
+  comes up as the Wi-Fi-only `a69c:8d83` without Bluetooth
+
+What `02_build_modules.sh` does for it:
+
+- `CONFIG_PLATFORM_UBUNTU=y` (the default): firmware path `/lib/firmware/aic8800D80/`. The Makefile also derives `KDIR`
+  and `ARCH` from the host's `uname` under this option; `ARCH=arm64` on the command line overrides it, and `KDIR` is
+  unused (the build is invoked as `make -C <kernel> M=...`)
+- `CONFIG_PREALLOC_RX_SKB=n`: the top-level Makefile enables it, and `aic_load_fw` then preallocates 1000 receive buffers
+  of 20 KB on load (allocated from 32 KB slabs, about 32 MB) that stay allocated even with no dongle. With it off, USB
+  receive buffers are allocated on demand; `aic8800_fdrv`'s own Makefile already defaults to off. Preallocation reduced
+  to 256 buffers was tried: reloading the modules while the chip was running made `aic_load_fw`'s receive thread hit OOM
+  and the kernel panicked and rebooted, so it stays off
+- `CONFIG_AIC_ZLP_QUIRK=` (empty): `aic_zlp_quirk` is only for `368b:8d81` and is not built
+- Applies `aic8800-s905d3.patch`:
+  - `rwnx_tx.c` contains one `trace_printk`. Any module containing it makes the kernel allocate per-CPU trace buffers
+    on load (about 5 MB on 4 cores) and print a large `trace_printk() being used` warning. It is replaced with
+    `pr_debug`, which is compiled out by default
+  - Without preallocation, `aic8800_fdrv` allocates a 20 KB skb (32 KB of contiguous memory) for each USB receive
+    request with `GFP_ATOMIC` in the USB completion handler (interrupt context). Once memory is fragmented this
+    occasionally fails, and the original code drops the request without resubmitting it; after a few failures all
+    receive requests are gone, `dmesg` shows `sub rx fail` and the link drops (easy to trigger with large transfers to
+    the board, even with 200+ MB free). The patch schedules the driver's existing `rx_urb_work` when the allocation
+    fails in interrupt context, which retries with `GFP_KERNEL` in process context and resubmits
+  - `aic_load_fw` handles `a69c:8d83` like `8d81`: when the chip still runs an old Wi-Fi-only firmware (e.g. a
+    self-powered hub keeps it powered across a board reboot), it is rebooted into download mode and reloaded; otherwise
+    `aic_load_fw` ignores it and Bluetooth never comes up
+- `cfg80211`, wireless extensions (`CONFIG_CFG80211_WEXT`) and `CONFIG_NL80211_TESTMODE` are all in the board kernel,
+  so the rest of the source builds unchanged
+
+`aic8800_fdrv` imports 243 kernel symbols and `aic_load_fw` 71, all with matching CRCs. `aic8800_fdrv` also uses
+`get_fw_path` and other functions exported by `aic_load_fw`, so the two modules must be built together and loaded in
+order. Loading both (no dongle attached) costs about 0.6 MB of memory.
+
 ---
 
 ## 8. Serial tools (Windows)
@@ -599,6 +794,11 @@ Three PowerShell scripts in `scripts/` (default `COM30`, change with `-PortName`
 | Default device fails to open after switching to another USB sound card (`Unknown PCM default` or similar) | `asound.conf` selects the card by the name `Audio`; change it to the new card's name (section 6.2) |
 | `audio-test.sh` reports playback / capture failed, `aplay -l` shows `Subdevices: 0/1` | Another program holds the card (AI-BOX, for example); stop it first |
 | `tar: invalid option -- 'J'` / `'z'` | Not supported by BusyBox tar; use `xz -dc xxx.tar.xz \| tar xf - -C /` |
+| AX900BT stays `1111:1111` or `a69c:5721` / `5723` / `5724` in `lsusb` and a new `/dev/sda` appears | The dongle is stuck in CD mode: `S43usb-peripherals` is not running (its watch loop switches it), or run `aic-modeswitch /dev/sda` (`1111:1111`) / `eject /dev/sda` (`a69c:57xx`) by hand |
+| AX900BT has `wlan0` but no `hci0`, `lsusb` shows `a69c:8d83` | The chip runs a Wi-Fi-only firmware (e.g. after UGREEN's driver): make sure this repository's `aic_load_fw` is installed, `rmmod aic8800_fdrv aic_load_fw` and `insmod` both again in order, or re-plug the dongle |
+| No `wlan0` after plugging in the AX900BT, `dmesg` shows `firmware path = ...` followed by a read failure | The firmware is not in `/lib/firmware/aic8800D80/` (section 4.6) |
+| `insmod aic8800_fdrv.ko` fails with `Unknown symbol get_fw_path` and similar | Load `aic_load_fw.ko` first |
+| `dmesg` shows `Aic USB device detected speed` and the dongle keeps reconnecting | It fell back to USB full speed; use a USB 2.0 hub or another cable (section 4.6) |
 
 ---
 
@@ -612,7 +812,10 @@ The prebuilt binaries under `artifacts/` are third-party software and keep their
 | Component | License |
 | --- | --- |
 | Kernel modules (`rtl8xxxu`, `btusb`, `btrtl`, `btintel`) | GPL-2.0 (Amlogic 4.9 kernel source, see section 7.4; `rtl8xxxu` from Linux 5.10.110, section 7.9) |
+| `aic_load_fw`, `aic8800_fdrv` and the `wsl-build/aic8800/` source | GPL-2.0 (shenmintao/aic8800d80, based on the AICSEMI driver), see section 7.10 |
+| `aic-modeswitch` | MIT (written for this repository; command sequence from shenmintao/aic8800d80) |
 | `rtl8723bu_nic.bin`, `rtl8723b_fw.bin` | Realtek firmware license, redistribution without modification allowed, see `artifacts/firmware/LICENCE.rtlwifi_firmware.txt` |
+| `aic8800D80/` firmware | AICSEMI firmware, redistributed unmodified from shenmintao/aic8800d80; no separate license text is provided |
 | BlueZ (`bluetoothd`, `bluetoothctl`, `btmgmt`) | GPL-2.0-or-later |
 | libdbus | AFL-2.1 or GPL-2.0-or-later |
 | glib, libffi, pcre2, expat, zlib, ncurses | LGPL-2.1+ / MIT / BSD-3-Clause / MIT / Zlib / MIT-X11 |

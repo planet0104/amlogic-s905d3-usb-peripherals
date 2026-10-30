@@ -1,6 +1,9 @@
 *.sh                       text eol=lf
 *.py                       text eol=lf
 *.c                        text eol=lf
+*.h                        text eol=lf
+Makefile                   text eol=lf
+Kconfig                    text eol=lf
 *.patch                    text eol=lf
 scripts/S43usb-peripherals text eol=lf
 scripts/asound.conf        text eol=lf
@@ -9,3 +12,5 @@ scripts/asound.conf        text eol=lf
 *.bin                      binary
 *.gz                       binary
 artifacts/userland/**      binary
+artifacts/firmware/**      binary
+artifacts/bin/**           binary

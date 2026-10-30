@@ -26,13 +26,13 @@ for ko in sys.argv[2:]:
         crc, = struct.unpack_from("<Q", data, i)
         name = data[i + 8:i + 64].split(b"\0")[0].decode()
         if name not in board:
-            continue          # 其他模块导出的符号（如 btintel 给 btusb 的），不在内核 CRC 表里
+            continue          # 其他模块导出的符号（如 btintel 给 btusb、aic_load_fw 给 aic8800_fdrv 的），不在内核 CRC 表里
         if board[name] == crc:
             ok += 1
         else:
             bad += 1
             print("  MISMATCH %-40s module=0x%08x board=0x%08x" % (name, crc, board[name]))
-    print("%-14s %3d kernel symbols OK" % (ko.rsplit("/", 1)[-1], ok))
+    print("%-16s %3d kernel symbols OK" % (ko.rsplit("/", 1)[-1], ok))
 
 print("ALL OK" if bad == 0 else "%d MISMATCHES" % bad)
 sys.exit(1 if bad else 0)

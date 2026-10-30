@@ -1,0 +1,94 @@
+AIC8800 驱动（shenmintao/aic8800d80）在 S905D3 上的改动，02_build_modules.sh 编译前打上：
+
+1. 模块里只要出现 trace_printk，加载时内核就给每个 CPU 分配跟踪缓冲区（4 核约 5 MB），一直占着；
+   rwnx_tx.c 里只是一行发送管理帧的调试输出，换成默认不编译的 pr_debug。
+2. 1111:1111 仿制网卡下完 Wi-Fi 固件后以 a69c:8d83 出现，aic_load_fw 原来不认它。USB Hub 自己供电时，
+   板子重启网卡不断电，芯片里还是上次的固件，aic_load_fw 不接手就不会重新下载（也就下不了蓝牙补丁）。
+   照 8d81 的处理加上 8d83：第一次见到先让芯片重启进下载模式，固件下好以后交给 aic8800_fdrv。
+3. 不用预分配时（02_build_modules.sh 关掉了），aic8800_fdrv 每个 20 KB 的接收缓冲区在 USB 完成回调里
+   临时申请（GFP_ATOMIC，按 32 KB 连续内存分配）。大流量接收时连续内存一时用完就失败，原代码失败后不重试，
+   接收请求一个个用光，网卡收不到包掉线（dmesg 刷 "sub rx fail"）。改成失败时交给 rx_urb_work 重试，
+   rx_urb_work 在进程上下文用 GFP_KERNEL 申请。
+   （打开预分配不行：芯片还在运行时重载驱动，aic_load_fw 的接收线程在预分配模式下会把内存吃光，实测内核 OOM 崩溃。）
+
+--- a/aic8800_fdrv/aicwf_usb.c
++++ b/aic8800_fdrv/aicwf_usb.c
+@@ -773,6 +773,7 @@
+ {
+     struct sk_buff *skb;
+     int ret;
++    gfp_t gfp;
+ 
+     if (!usb_buf || !usb_dev)
+         return -1;
+@@ -783,13 +784,18 @@
+         return -1;
+     }
+ 
++    gfp = (in_interrupt() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
+     if(aicwf_usb_rx_aggr){
+-        skb = __dev_alloc_skb(AICWF_USB_AGGR_MAX_PKT_SIZE, GFP_ATOMIC/*GFP_KERNEL*/);
++        skb = __dev_alloc_skb(AICWF_USB_AGGR_MAX_PKT_SIZE, gfp);
+     } else {
+-        skb = __dev_alloc_skb(aicwf_usb_max_pkt_size, GFP_ATOMIC/*GFP_KERNEL*/);
++        skb = __dev_alloc_skb(aicwf_usb_max_pkt_size, gfp);
+     }
+     if (!skb) {
+         aicwf_usb_rx_buf_put(usb_dev, usb_buf);
++        /* 中断里申请不到大块连续内存：交给 rx_urb_work 在进程上下文重试（能回收、整理内存），
++           不然接收请求一个个用完，网卡收不到包掉线 */
++        if (gfp == GFP_ATOMIC)
++            schedule_work(&usb_dev->rx_urb_work);
+         return -1;
+     }
+ 
+--- a/aic8800_fdrv/rwnx_tx.c
++++ b/aic8800_fdrv/rwnx_tx.c
+@@ -2408,7 +2408,7 @@
+ 
+     /* Update txq and HW queue credits */
+     if (sw_txhdr->desc.host.flags & TXU_CNTRL_MGMT) {
+-        trace_printk("done=%d retry_required=%d sw_retry_required=%d acknowledged=%d\n",
++        pr_debug("done=%d retry_required=%d sw_retry_required=%d acknowledged=%d\n",
+                      rwnx_txst.tx_done, rwnx_txst.retry_required,
+                      rwnx_txst.sw_retry_required, rwnx_txst.acknowledged);
+ #ifdef CREATE_TRACE_POINTS
+--- a/aic_load_fw/aic_compat_8800d80.h
++++ b/aic_load_fw/aic_compat_8800d80.h
+@@ -3,6 +3,7 @@
+ 
+ #define USB_DEVICE_ID_AIC_8800D80       0x8D80
+ #define USB_DEVICE_ID_AIC_8800D81       0x8D81
++#define USB_DEVICE_ID_AIC_8800D83       0x8D83
+ #define USB_DEVICE_ID_AIC_8800D40       0x8D40
+ #define USB_DEVICE_ID_AIC_8800D41       0x8D41
+ 
+--- a/aic_load_fw/aicwf_usb.c
++++ b/aic_load_fw/aicwf_usb.c
+@@ -1347,6 +1347,10 @@
+         usb_dev->chipid = PRODUCT_ID_AIC8800D81;
+ 	AICWFDBG(LOGINFO, "%s USE AIC8800D81\r\n", __func__);
+         return 0;
++    }else if(pid == USB_DEVICE_ID_AIC_8800D83){
++        usb_dev->chipid = PRODUCT_ID_AIC8800D81;
++	AICWFDBG(LOGINFO, "%s USE AIC8800D83\r\n", __func__);
++        return 0;
+     }else if(pid == USB_DEVICE_ID_AIC_8800D40){
+         usb_dev->chipid = PRODUCT_ID_AIC8800D80;
+         AICWFDBG(LOGINFO, "%s USE AIC8800D40\r\n", __func__);
+@@ -1689,6 +1693,7 @@
+ 	if(fw_loaded == 1 && 
+         (id->idProduct == USB_DEVICE_ID_AIC_8801 || 
+         id->idProduct == USB_DEVICE_ID_AIC_8800D81 ||
++        id->idProduct == USB_DEVICE_ID_AIC_8800D83 ||
+ 	    id->idProduct == USB_DEVICE_ID_AIC_8800D41 ||
+ 	    id->idProduct == USB_DEVICE_ID_AIC_8800D81X2 ||
+ 	    id->idProduct == USB_DEVICE_ID_AIC_8800D89X2)){
+@@ -1855,6 +1860,7 @@
+     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8801)},
+     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D80)},
+     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D81)},
++    {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D83)},
+     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D40)},
+     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D41)},
+     {USB_DEVICE(USB_VENDOR_ID_AIC_V2, USB_DEVICE_ID_AIC_8800D80X2)},
